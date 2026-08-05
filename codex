@@ -1,0 +1,56 @@
+# Codex handoff — 2026-08-05
+
+Claude’s work was resumed and completed from the existing scaffold. Do not
+recreate the project structure or repeat the blocked heredoc-based file-write
+commands; the intended foundation is now present and validated.
+
+## Completed backend work
+
+- Fixed FastAPI router imports in `backend/app/main.py` and `backend/app/api/__init__.py`.
+- Repaired the global exception handler’s invalid `time.time().hex()` error ID.
+- Implemented a real current-user dependency using OAuth2 bearer tokens and a database lookup in `backend/app/api/deps.py`.
+- Replaced placeholder registration tokens with real JWTs and made registration return the documented `user` and `token` objects.
+- Replaced the placeholder password hash with real password hashing. The configured passlib scheme is PBKDF2-SHA256 with 310,000 rounds; this avoids the incompatible bcrypt/passlib combination found in the environment.
+- Corrected SQLAlchemy model imports, UUID types, SQLite-incompatible PostgreSQL array fields, reserved `metadata` attributes, and missing `Boolean` import.
+- Corrected Pydantic v2 field validation and mutable schema defaults.
+- Added `backend/app/data/exercises.py` with initial exercise catalogue data.
+- Removed an accidental literal shell/heredoc fragment from `backend/app/utils/validators.py`.
+- Fixed structlog configuration for the installed structlog API.
+- Updated test fixtures for current HTTPX `ASGITransport` and corrected the registration response assertion.
+- Added `greenlet` to the runtime/Poetry dependencies.
+
+## Completed web work
+
+- Added a runnable Next.js 14 application in `apps/web/`.
+- Added package scripts, TypeScript/Next/ESLint configuration, environment example, Dockerfile, and package lock.
+- Added an initial responsive movement-intelligence dashboard page, reusable activity component, API fetch client, and API types.
+- Updated root Makefile and Docker Compose references from missing `frontend/` to `apps/web/`.
+
+## Completed AI, docs, and infrastructure work
+
+- Added `ai-models/README.md`, requirements, a default experiment config, and a safe `train.py` configuration entry point.
+- Added architecture overview, development setup, and authentication API documentation.
+- Added Kubernetes backend deployment/service and base kustomization.
+- Added a deliberately resource-free Terraform AWS starter. Provision infrastructure only after a reviewed security, cost, and healthcare-compliance design.
+- Documented that `services/` is a future extraction boundary; it is not a set of active microservices.
+
+## Verification already run
+
+- `python3 -m compileall -q backend/app ai-models` passed.
+- `cd backend && .venv/bin/python -m pytest -q --disable-warnings --no-header` passed: **20 tests passed**.
+- `cd apps/web && npm run typecheck` passed.
+- `cd apps/web && npm run build` passed.
+
+## Local environment state
+
+- Backend validation dependencies are installed in `backend/.venv/` (ignored by Git).
+- Frontend dependencies are installed in `apps/web/node_modules/` (ignored by Git).
+- Docker is not installed on this machine, so Docker Compose could not be validated or started.
+- The checkout has no `.git` metadata, so no Git status, commit, or branch operations were possible.
+
+## Recommended next work
+
+1. Install Docker, copy `.env.example` to `.env`, and run the Compose stack against PostgreSQL and Redis.
+2. Add Alembic migrations from the corrected models; do not rely on test-time `create_all` in production.
+3. Replace analysis, upload storage, and insights endpoint placeholders with tested domain implementations.
+4. Add frontend authentication and assessment/video-capture flows once the API and storage contract are finalized.

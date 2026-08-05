@@ -1,0 +1,13 @@
+This directory contains database migrations.
+
+To generate a new migration:
+    alembic revision --autogenerate -m "description"
+
+To apply migrations:
+    alembic upgrade head
+
+To rollback:
+    alembic downgrade -1
+
+To check current version:
+    alembic current

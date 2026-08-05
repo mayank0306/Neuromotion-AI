@@ -1,0 +1,116 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class$
+*.so
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm
+.yarn/
+.pnpm/
+.pnpm-store/
+
+# Environment
+.env
+.env.local
+.env.*.local
+.env.development
+.env.staging
+.env.production
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs_v2.Tid
+Thumbs.db
+Desktop.ini
+
+# Docker
+.dockerignore
+
+# Logs
+*.log
+logs/
+nohup.out
+
+# Build outputs
+.next/
+out/
+dist/
+.build/
+
+# Terraform
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# Models
+*.model
+*.pt
+*.h5
+models/
+
+# Data files
+*.db
+*.sqlite3
+*.db-journal
+
+# Media
+*.mp4
+*.mov
+*.mp3
+*.wav
+*.jpg
+*.jpeg
+*.png
+*.gif
+
+# Test results
+.pytest_cache/
+test-results/
+playwright-report/
+coverage/
+
+# IDE specific
+.history/
+*.vs/
+*.code-workspace
+
+# Security
+*.pem
+*.key

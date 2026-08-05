@@ -1,0 +1,8 @@
+experiment_name: neuromotion-pose-baseline
+model:
+  name: blazepose
+  confidence_threshold: 0.5
+training:
+  epochs: 10
+  batch_size: 16
+  learning_rate: 0.001

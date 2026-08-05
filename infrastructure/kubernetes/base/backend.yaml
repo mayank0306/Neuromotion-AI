@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: neuromotion-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: neuromotion-backend
+  template:
+    metadata:
+      labels:
+        app: neuromotion-backend
+    spec:
+      containers:
+        - name: backend
+          image: neuromotion/backend:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: neuromotion-backend-secrets
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8000 }
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8000 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: neuromotion-backend
+spec:
+  selector:
+    app: neuromotion-backend
+  ports:
+    - port: 8000
+      targetPort: 8000

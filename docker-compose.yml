@@ -1,0 +1,138 @@
+# Docker Compose for NeuroMotion Development Environment
+# This file defines all services needed for local development
+
+version: '3.8'
+
+services:
+  # ┌──────────────────────────────────────────────────────────┐
+  # │ PostgreSQL Database                                       │
+  # └──────────────────────────────────────────────────────────┘
+  db:
+    image: postgres:15-alpine
+    container_name: neuromotion-db
+    environment:
+      POSTGRES_DB: neuromotion_dev
+      POSTGRES_USER: neuromotion
+      POSTGRES_PASSWORD: neuromotion
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/scripts/init_db.py:/docker-entrypoint-initdb.d/init_db.py
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-PING", "pg_isready", "-U", "neuromotion"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - neuromotion-network
+
+  # ┌──────────────────────────────────────────────────────────┐
+  # │ Redis (Cache, Sessions, Message Queue)                    │
+  # └──────────────────────────────────────────────────────────┘
+  redis:
+    image: redis:7-alpine
+    container_name: neuromotion-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - neuromotion-network
+
+  # ┌──────────────────────────────────────────────────────────┐
+  # │ Backend API (FastAPI)                                     │
+  # └──────────────────────────────────────────────────────────┘
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: neuromotion-backend
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://neuromotion:neuromotion@db:5432/neuromotion_dev
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=dev-secret-key-change-in-production
+      - JWT_SECRET_KEY=dev-jwt-secret-key-change-in-production
+      - APP_ENV=development
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ./backend:/app
+      - ./ai-models/models:/app/models
+    ports:
+      - "8000:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - neuromotion-network
+
+  # ┌──────────────────────────────────────────────────────────┐
+  # │ Frontend (Next.js)                                       │
+  # └──────────────────────────────────────────────────────────┘
+  frontend:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      target: development
+    container_name: neuromotion-frontend
+    depends_on:
+      - backend
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+      - NEXT_PUBLIC_APP_NAME=NeuroMotion
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    command: npm run dev
+    networks:
+      - neuromotion-network
+
+  # ┌──────────────────────────────────────────────────────────┐
+  # │ Adminer (Database Admin UI)                               │
+  # └──────────────────────────────────────────────────────────┘
+  adminer:
+    image: adminer
+    container_name: neuromotion-adminer
+    ports:
+      - "8080:8080"
+    environment:
+      - ADMINER_DEFAULT_SERVER=db
+    depends_on:
+      - db
+    networks:
+      - neuromotion-network
+
+  # ┌──────────────────────────────────────────────────────────┐
+  # │ Redis Commander (Redis Admin UI)                          │
+  # └──────────────────────────────────────────────────────────┘
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: neuromotion-redis-commander
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    depends_on:
+      - redis
+    networks:
+      - neuromotion-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  neuromotion-network:
+    driver: bridge

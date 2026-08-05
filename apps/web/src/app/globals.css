@@ -1,0 +1,12 @@
+:root { color-scheme: dark; --surface: #101b20; --panel: #17272d; --ink: #edf5ef; --muted: #a8bbb1; --accent: #a7e081; }
+* { box-sizing: border-box; }
+body { margin: 0; background: radial-gradient(circle at top right, #284641, #101b20 48%); color: var(--ink); font-family: Arial, sans-serif; }
+button { font: inherit; }
+.shell { width: min(1120px, calc(100% - 40px)); margin: auto; padding: 24px 0 72px; }
+.nav { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; }
+.brand { font-weight: 700; font-size: 1.2rem; letter-spacing: .02em; }.nav-note, .metric p, .metric span { color: var(--muted); }
+.hero { max-width: 720px; padding: 104px 0 70px; }.eyebrow { color: var(--accent); font-size: .75rem; font-weight: 700; letter-spacing: .14em; }
+h1 { margin: 14px 0; font-size: clamp(2.7rem, 7vw, 5.8rem); letter-spacing: -.06em; line-height: .94; }.lede { max-width: 540px; color: var(--muted); font-size: 1.1rem; line-height: 1.6; }
+.primary-button { border: 0; border-radius: 99px; padding: 14px 20px; margin-top: 16px; background: var(--accent); color: #142018; font-weight: 700; cursor: pointer; }
+.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }.metric, .activity { border: 1px solid #2b4142; border-radius: 16px; padding: 24px; background: color-mix(in srgb, var(--panel) 88%, transparent); }.metric p { margin: 0; }.metric strong { display: block; margin: 12px 0 5px; font-size: 2rem; }.metric span { font-size: .9rem; }.activity { margin-top: 16px; }.activity h2 { margin-top: 0; }.activity ul { margin: 0; padding-left: 20px; color: var(--muted); line-height: 1.9; }
+@media (max-width: 640px) { .hero { padding: 72px 0 48px; }.metrics { grid-template-columns: 1fr; } }
