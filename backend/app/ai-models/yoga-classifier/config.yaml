@@ -1,0 +1,47 @@
+# Yoga Pose Classifier Configuration
+experiment_name: yoga-pose-classifier-kaggle5class
+
+model:
+  name: yoga_pose_classifier
+  architecture: mlp  # Multi-Layer Perceptron as specified in requirements
+  input_features: 99  # 33 landmarks * 3 coordinates (x,y,z)
+  hidden_layers: [128, 64, 32]
+  num_classes: 5  # Warrior2, Downward Dog, Tree, Goddess, Plank
+  dropout_rate: 0.3
+
+training:
+  epochs: 50
+  batch_size: 32
+  learning_rate: 0.001
+  optimizer: adam
+  loss_function: cross_entropy
+  # Kaggle Yoga 5-Class dataset split
+  train_split: 0.8  # From official training set
+  validation_split: 0.2  # From official training set
+  # Use official test set for final evaluation
+
+dataset:
+  name: kaggle-yoga-5class
+  # Paths would be configured via environment variables or mounted volumes
+  images_dir: ${DATASET_PATH}/kaggle_yoga/images
+  labels_csv: ${DATASET_PATH}/kaggle_yoga/labels.csv
+  # Class mapping
+  class_mapping:
+    Warrior2: 0
+    Downward_Dog: 1
+    Tree: 2
+    Goddess: 3
+    Plank: 4
+
+# Reference pose means for angle deviation calculations (computed during training)
+reference_means:
+  # These would be computed from training data and stored here
+  # Format: {exercise_name: {landmark_pair: mean_angle}}
+  # Example angles in degrees for Warrior II pose
+  Warrior2:
+    left_elbow: 165.0  # Example values - would be computed from data
+    right_elbow: 165.0
+    left_knee: 90.0
+    right_knee: 170.0  # Straight back leg
+    left_shoulder_abduction: 90.0  # Arm out to side
+    right_shoulder_abduction: 15.0  # Arm slightly forward

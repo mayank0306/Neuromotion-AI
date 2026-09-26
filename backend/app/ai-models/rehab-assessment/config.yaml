@@ -1,0 +1,83 @@
+# Rehabilitation Assessment Model Configuration
+experiment_name: rehab-movement-quality-assessment
+
+model:
+  name: rehab_quality_model
+  architecture: mlp  # Multi-Layer Perceptron as specified in requirements
+  input_features: 99  # 33 landmarks * 3 coordinates (x,y,z)
+  hidden_layers: [128, 64, 32]
+  # Dual output heads
+  classification_head:  # For UI-PRMD (correct/incorrect)
+    num_classes: 2
+    activation: softmax
+  regression_head:  # For KIMORE (quality score 0-100)
+    num_classes: 1
+    activation: linear  # Output raw score
+
+training:
+  epochs: 100
+  batch_size: 32
+  learning_rate: 0.001
+  optimizer: adam
+  # Multi-task learning losses
+  classification_loss: cross_entropy
+  regression_loss: mse  # Mean Squared Error
+  loss_weights:
+    classification: 0.5
+    regression: 0.5
+
+# Dataset configurations
+datasets:
+  ui_prmd:  # University of Idaho Physical Rehabilitation Movement Dataset
+    name: ui-prmd
+    type: classification  # Correct/incorrect repetitions
+    subjects_total: 10
+    exercises: 10
+    # Subject-independent split: 5 train / 2 validation / 3 test
+    # Rotated across folds
+    train_subjects: [1, 2, 3, 4, 5]  # Example - would rotate in actual implementation
+    validation_subjects: [6, 7]
+    test_subjects: [8, 9, 10]
+    data_path: ${DATASET_PATH}/ui-prmd
+    features: skeleton_joint_angles  # Using provided joint angles from Kinect/Vicon
+
+  kimore:  # KIMORE dataset
+    name: kimore
+    type: regression  # Continuous quality score
+    subjects_total: 78  # 44 healthy + 34 patients
+    conditions: [healthy, stroke, parkinsons, back_pain]
+    # Stratified subject-level split ~70/15/15
+    train_ratio: 0.7
+    validation_ratio: 0.15
+    test_ratio: 0.15
+    # Stratified by diagnosis group
+    data_path: ${DATASET_PATH}/kimore
+    features: [skeleton, rgb_depth]  # Skeleton + RGB-D data
+    target: clinician_quality_score  # 0-100 scale
+
+# Reference values for angle deviation calculations
+reference_means:
+  # Computed from training data during training pipeline
+  # Would be populated after training on UI-PRMD and KIMORE
+  # Format: {exercise_name: {joint_angle: mean_value}}
+  shoulder_abduction:
+    left_shoulder_abduction: 90.0
+    right_shoulder_abduction: 90.0
+  shoulder_flexion:
+    left_shoulder_flexion: 180.0
+    right_shoulder_flexion: 180.0
+  elbow_flexion:
+    left_elbow_flexion: 0.0  # Fully extended
+    right_elbow_flexion: 0.0
+  knee_extension:
+    left_knee_extension: 0.0  # Fully extended
+    right_knee_extension: 0.0
+  hip_abduction:
+    left_hip_abduction: 0.0
+    right_hip_abduction: 0.0
+
+# Explainable AI settings
+explainability:
+  method: deviation_analysis  # Show which joints deviate from reference means
+  threshold_deviation: 15.0  # Degrees - beyond this is considered significant
+  min_confidence_for_explanation: 0.7  # Only explain if model confidence > threshold

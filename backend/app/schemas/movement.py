@@ -27,8 +27,8 @@ class PoseDataSchema(BaseModel):
 
 class MovementSessionBase(BaseModel):
     """Base movement session schema."""
-    
-    session_type: str = Field(..., pattern="^(yoga|posture|gait|balance|flexibility)$")
+
+    session_type: str = Field(..., pattern="^(yoga|posture|gait|balance|flexibility|rehab_assessment)$")
     exercise_id: Optional[str] = None
 
 
@@ -77,9 +77,22 @@ class AnalysisRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 
+class MetricWithTag(BaseModel):
+    """Individual metric with measured/estimated tag."""
+
+    value: float
+    is_measured: bool  # True for direct geometric computation, False for inferred proxy
+    description: str = None
+
+
 class AnalysisResponse(BaseModel):
     """Analysis response schema."""
-    
+
     analysis_id: UUID
-    results: Dict[str, Any]
+    exercise_type: str  # yoga, posture, gait, balance, flexibility, rehab_assessment
+    overall_score: float  # 0-100 quality score
+    score_breakdown: Dict[str, float]  # Individual component scores (angle_accuracy, symmetry, etc.)
+    metrics: Dict[str, MetricWithTag]  # Individual metrics with measured/estimated tags
+    feedback: List[str] = []  # Human-readable feedback
+    explanations: Dict[str, str] = {}  # Explanations for low scores (joint/phase causing issues)
     processing_time_ms: int

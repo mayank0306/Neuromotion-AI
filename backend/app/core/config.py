@@ -62,12 +62,27 @@ class Settings(BaseSettings):
     POSE_MODEL_PATH: str = "models/blazepose"
     MODEL_CONFIDENCE_THRESHOLD: float = 0.5
     INPUT_SIZE_STR: str = "256,256"
+    # Scoring weights for overall quality score
+    ANGLE_ACCURACY_WEIGHT: float = 0.4
+    SYMMETRY_WEIGHT: float = 0.2
+    STABILITY_WEIGHT: float = 0.25
+    RANGE_OF_MOTION_WEIGHT: float = 0.15
 
     @property
     def INPUT_SIZE(self) -> tuple[int, int]:
         """Parse input size from string."""
         parts = self.INPUT_SIZE_STR.split(",")
         return (int(parts[0]), int(parts[1]))
+
+    @property
+    def SCORING_WEIGHTS(self) -> dict[str, float]:
+        """Get scoring weights for quality score calculation."""
+        return {
+            "angle_accuracy": self.ANGLE_ACCURACY_WEIGHT,
+            "symmetry": self.SYMMETRY_WEIGHT,
+            "stability": self.STABILITY_WEIGHT,
+            "range_of_motion": self.RANGE_OF_MOTION_WEIGHT
+        }
 
     # ┌────────────────────────────────────────────────────────────┐
     # │ Storage Configuration                                        │
