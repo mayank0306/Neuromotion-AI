@@ -114,3 +114,6 @@ coverage/
 # Security
 *.pem
 *.key
+
+# TypeScript build artifacts
+tsconfig.tsbuildinfo
