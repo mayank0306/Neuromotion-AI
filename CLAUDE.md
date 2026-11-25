@@ -2,144 +2,86 @@
 
 ## Project Overview
 
-NeuroMotion is an AI-powered digital healthcare platform for human movement intelligence.
-This document contains essential context for all AI coding assistants working on this project.
+**NeuroMotion** is an AI-powered clinical healthcare platform for **AI-Assisted Rehabilitation Movement Assessment**.
+
+### Flagship vs. Supporting Modules
+1. **Flagship Module: Rehab Movement Quality Assessment**
+   - Predicts a continuous quality score (0–100) via a multi-task MLP regression head trained on the KIMORE clinical dataset.
+   - Evaluates form correctness (correct vs. incorrect) via a UI-PRMD classification head.
+   - Generates explainable clinical diagnostics identifying the exact joint and movement phase causing low scores based on deviations from training-set class means.
+2. **Supporting Module: Yoga Pose Classification**
+   - Kaggle Yoga 5-Class classifier (Warrior II, Downward Dog, Tree, Goddess, Plank). Secondary supporting module, not the headline.
+3. **Deterministic Geometric Modules: Posture, Gait, Balance, Flexibility**
+   - Strictly rule-based geometric algorithms on landmarks. No ML training for these modules.
 
 ## Architecture Summary
 
-The project follows **Clean Architecture** principles with clear separation of concerns:
-
 ```
-frontend/     → REST/WebSocket   → backend/        → AI Models (Python)
-(Next.js)      API Gateway         (FastAPI)        (MediaPipe/PyTorch)
+Uploaded Video (.mp4/.mov)
+       │
+       ▼
+OpenCV Frame Extraction
+       │
+       ▼
+MediaPipe BlazePose (Pretrained, not retrained)
+       │
+       ▼
+Shared Landmark Processing
+       │
+       ▼
+Shared Feature Engineering (Joint angles, ROM, bilateral symmetry, temporal features)
+  ├── Flagship Rehab: RehabQualityMLP (UI-PRMD classification + KIMORE regression)
+  ├── Supporting Yoga: YogaClassifierMLP (Kaggle Yoga 5-Class)
+  └── Rule Modules: Posture, Gait, Balance, Flexibility (Deterministic geometry)
+       │
+       ▼
+Weighted Composite Scoring & Joint Deviation Explanations
 ```
 
 ### Key Decisions
-- **Monolith with Modular Design** - Single deployable unit with clean boundaries
-- **Clean Architecture** - Domain-driven, testable, framework-independent
-- **Free Technologies Only** - PostgreSQL, Redis, MediaPipe, FastAPI, Next.js
-- **Healthcare-Focused** - HIPAA-aware design, field-level encryption for PHI
+- **Flagship Focus:** Digital rehabilitation movement quality assessment and explainable diagnostics.
+- **Single Shared Feature Layer:** `FeatureEngineering` in `backend/app/analysis/feature_engineering.py` is reused identically everywhere; never duplicate between training and inference.
+- **Exactly Two Trained PyTorch Models:** Simple MLPs only (no LSTM, GRU, ST-GCN, or YOLO).
+- **Metric Tagging:** Every output metric carries an explicit tag: `"measured"` (direct geometry) or `"estimated"` (derived proxy).
+- **Composite Scoring:** Weighted formula with configurable constants:
+  $$\text{Score} = (0.40 \times \text{angle\_accuracy}) + (0.20 \times \text{symmetry}) + (0.25 \times \text{stability}) + (0.15 \times \text{ROM})$$
+- **Persisted Class Means:** Corrections are deviations from training-set class means, computed during training and persisted for inference in `reference_stats.json`.
+- **V1 Input Mode:** Recorded video upload only (`POST /api/v1/analysis/video`). Real-time scaffolding is gated behind `ENABLE_REALTIME_ANALYSIS = False`.
+- **Subject-Based Splits:** Splits are strictly by subject (never by frame or rep):
+  - UI-PRMD: 5 train / 2 validation / 3 test rotating folds (`GroupKFold`).
+  - KIMORE: ~70 / 15 / 15 stratified by diagnosis group.
+  - Yoga: Official train/test split with an 80/20 train/val carve-out.
 
 ## Directory Structure
 
 ```
 neuromotion/
-├── backend/              # FastAPI application (main backend)
-├── frontend/             # Next.js 14 application
-├── ai-models/            # AI/ML model definitions and pipelines
-├── infrastructure/       # Docker, Kubernetes, Terraform configs
-├── docs/                 # Project documentation
-├── tests/                # End-to-end tests
-└── scripts/              # Utility scripts
+├── backend/
+│   ├── app/
+│   │   ├── analysis/             # FeatureEngineering & PyTorch models (models.py)
+│   │   ├── ai-models/            # Model configs, pipelines, checkpoints
+│   │   ├── api/v1/endpoints/     # REST API (video upload, analysis)
+│   │   ├── core/config.py        # Settings (SCORING_WEIGHTS, ENABLE_REALTIME_ANALYSIS)
+│   │   ├── data/                 # Exercises & persisted reference stats
+│   │   ├── schemas/movement.py   # Schemas with measured/estimated tags
+│   │   └── services/ai_service.py # Core AIService
+│   └── tests/                    # Unit and integration test suite
+├── ai-models/                    # Unified training entry point (train.py)
+├── docs/                         # Architecture documentation & gap analysis
+└── Makefile                      # Development commands
 ```
-
-## Development Workflow
-
-1. Create a feature branch: `git checkout -b feature/my-feature`
-2. Write tests first (TDD approach)
-3. Implement the feature
-4. Run tests: `make test`
-5. Run linting: `make lint`
-6. Run type checking: `make typecheck`
-7. Commit with descriptive message: `git commit -m "feat: add my feature"`
-8. Push and create pull request
-
-## Coding Standards
-
-### Python Backend (FastAPI)
-- PEP 8, PEP 257, PEP 484 compliant
-- Use type hints everywhere
-- Docstrings for all public functions
-- Pydantic models for validation
-- Repository pattern for data access
-- Dependency injection with FastAPI Depends
-
-### TypeScript Frontend
-- TypeScript strict mode enabled
-- Path aliases for imports (@/* maps to src/*)
-- Consistent naming: camelCase for variables, PascalCase for components
-- Functional components with hooks
-- Custom hooks for logic reuse
-
-### AI Models
-- PyTorch for deep learning
-- Type hints throughout
-- Experiment tracking with MLflow
-- Model versioning
-
-## Testing Strategy
-
-```
-Tests are organized in:
-├── backend/tests/
-│   ├── unit/              # Individual function/class tests
-│   ├── integration/       # Component integration tests
-│   └── conftest.py        # Test configuration
-├── frontend/tests/
-│   ├── unit/              # Component unit tests
-│   ├── integration/       # Feature integration tests
-│   └── e2e/               # End-to-end browser tests
-└── tests/                  # Cross-system e2e tests
-```
-
-Target coverage: 85% minimum for unit tests
 
 ## Common Commands
 
 | Command | Description |
 |---------|-------------|
-| `make dev` | Start all development servers |
-| `make test` | Run all tests |
-| `make lint` | Run all linters |
+| `make test` | Run pytest test suite |
+| `make ai-train` | Train both PyTorch models and persist artifacts |
+| `make lint` | Run code linters |
 | `make typecheck` | Run type checking |
-| `make db-init` | Initialize database |
-| `make db-migrate` | Run database migrations |
-| `make docker-up` | Start Docker services |
-| `make docker-down` | Stop Docker services |
-| `make ai-train` | Train AI models |
-| `make ai-eval` | Evaluate AI models |
+| `make dev` | Start development servers |
 
-## API Conventions
-
-- RESTful API design with JSON
-- Versioning: `/api/v1/` prefix
-- Authentication: JWT Bearer tokens
-- Error handling: RFC 7807 Problem Details
-- Pagination: Cursor-based for lists
-- Rate limiting: 100 requests/minute per user
-
-## Environment Variables
-
-Key environment variables (see `.env.example` for all):
-
-```bash
-DATABASE_URL=postgresql://user:pass@localhost:5432/neuromotion
-REDIS_URL=redis://localhost:6379/0
-JWT_SECRET_KEY=your-secret-key
-STRIPE_SECRET_KEY=sk_test_...
-```
-
-## Code Style Rules
-
-1. Use descriptive names - avoid abbreviations
-2. One responsibility per function/class
-3. Fail fast - validate inputs early
-4. Log important operations with context
-5. Handle all error cases explicitly
-6. Write tests for all new features
-7. Document complex algorithms
-
-## AI Model Guidelines
-
-1. Save models with version numbers
-2. Document model architecture and hyperparameters
-3. Track experiments with MLflow
-4. Validate with diverse datasets
-5. Check for bias across demographics
-
-## Deployment Notes
-
-- Production builds use Docker
-- Kubernetes manifests in infrastructure/
-- Free tier deployments on Render/Vercel
-- Environment-specific configs in overlays/
+## Testing Strategy
+- Unit tests for feature engineering, models, and subject-level splits.
+- Integration tests for video upload and analysis endpoints.
+- Coverage target: 85% minimum for unit tests.
