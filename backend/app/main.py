@@ -71,18 +71,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="NeuroMotion API",
     description="""
-    AI-powered digital healthcare platform for human movement intelligence.
+    AI-Assisted Rehabilitation Movement Assessment platform.
 
     Features:
-    - AI-powered yoga analysis
-    - Posture correction
-    - Gait analysis
-    - Movement tracking
-    - Personalized health insights
-
-    Documentation:
-    - API Docs: https://api.neuromation.ai/docs
-    - Developer Portal: https://developers.neuromation.ai
+    - Flagship Rehab Movement Quality Assessment (continuous quality score + joint/phase explanations)
+    - Supporting Yoga Pose Classification (Kaggle 5-Class)
+    - Deterministic Geometric Modules (Posture, Gait, Balance, Flexibility)
+    - Recorded Video Upload Pipeline (OpenCV -> MediaPipe BlazePose -> Shared Feature Engineering)
     """,
     version=settings.APP_VERSION,
     openapi_url="/api/openapi.json",

@@ -147,25 +147,3 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "slow: Slow tests"
     )
-
-
-@pytest.fixture
-def mock_pose_estimator():
-    """Mock pose estimator for unit tests."""
-    class MockPoseEstimator:
-        async def initialize(self):
-            pass
-        
-        async def estimate(self, image):
-            # Return mock pose data (33 landmarks)
-            return [
-                (0.5, 0.5, 0.0, 0.9) for _ in range(33)
-            ]
-        
-        def get_landmark_names(self):
-            return ["nose", "left_shoulder", "right_shoulder"]
-        
-        async def close(self):
-            pass
-    
-    return MockPoseEstimator()

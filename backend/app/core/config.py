@@ -97,48 +97,18 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_MB: int = 100
 
     # ┌────────────────────────────────────────────────────────────┐
-    # │ Email Configuration                                          │
-    # └────────────────────────────────────────────────────────────┘
-    SMTP_HOST: str = "smtp.mailgun.org"
-    SMTP_PORT: int = 587
-    SMTP_USER: Optional[str] = None
-    SMTP_PASSWORD: Optional[str] = None
-    SMTP_FROM_EMAIL: str = "NeuroMotion <no-reply@neuromation.ai>"
-
-    # ┌────────────────────────────────────────────────────────────┐
-    # │ Payment Configuration                                        │
-    # └────────────────────────────────────────────────────────────┘
-    STRIPE_SECRET_KEY: Optional[str] = None
-    STRIPE_WEBHOOK_SECRET: Optional[str] = None
-    STRIPE_SUCCESS_URL: str = "https://neuromation.ai/success"
-    STRIPE_CANCEL_URL: str = "https://neuromation.ai/cancel"
-
-    # ┌────────────────────────────────────────────────────────────┐
-    # │ Frontend URLs                                                │
-    # └────────────────────────────────────────────────────────────┘
-    NEXT_PUBLIC_API_URL: str = "http://localhost:8000/api/v1"
-    NEXT_PUBLIC_APP_NAME: str = "NeuroMotion"
-
-    # ┌────────────────────────────────────────────────────────────┐
     # │ Monitoring & Logging                                         │
     # └────────────────────────────────────────────────────────────┘
     LOG_LEVEL: str = "INFO"
-    SENTRY_DSN: Optional[str] = None
-    PROMETHEUS_ENABLED: bool = True
-    ENABLE_TRACING: bool = False
 
     # ┌────────────────────────────────────────────────────────────┐
     # │ Feature Flags                                                │
     # └────────────────────────────────────────────────────────────┘
     ENABLE_TELEMEDICINE: bool = False
-    ENABLE_GAIT_ANALYSIS: bool = True
-    ENABLE_POSTURE_ASSESSMENT: bool = True
-    ENABLE_DATA_EXPORT: bool = True
 
     # ┌────────────────────────────────────────────────────────────┐
     # │ Development Settings                                         │
     # └────────────────────────────────────────────────────────────┘
-    ENABLE_DEBUG_TOOLBAR: bool = False
     ENABLE_CORS: bool = True
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8000"
 
