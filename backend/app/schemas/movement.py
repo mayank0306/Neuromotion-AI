@@ -1,14 +1,14 @@
 """Movement analysis schemas."""
 
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from uuid import UUID
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class PoseLandmarkSchema(BaseModel):
     """Pose landmark schema."""
-    
+
     x: float
     y: float
     z: float = 0.0
@@ -18,7 +18,7 @@ class PoseLandmarkSchema(BaseModel):
 
 class PoseDataSchema(BaseModel):
     """Pose data for a single frame."""
-    
+
     frame_index: int
     timestamp: datetime
     landmarks: List[PoseLandmarkSchema]
@@ -28,19 +28,19 @@ class PoseDataSchema(BaseModel):
 class MovementSessionBase(BaseModel):
     """Base movement session schema."""
 
-    session_type: str = Field(..., pattern="^(yoga|posture|gait|balance|flexibility|rehab_assessment)$")
+    session_type: str = Field(..., pattern="^(rehab_assessment|yoga|posture|gait|balance|flexibility)$")
     exercise_id: Optional[str] = None
 
 
 class MovementSessionCreate(MovementSessionBase):
     """Session creation schema."""
-    
+
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 
 class MovementSessionRead(MovementSessionBase):
     """Session read schema."""
-    
+
     id: UUID
     user_id: UUID
     duration_seconds: Optional[int] = None
@@ -48,13 +48,13 @@ class MovementSessionRead(MovementSessionBase):
     end_time: Optional[datetime] = None
     score: Optional[float] = None
     created_at: datetime
-    
+
     model_config = {"from_attributes": True}
 
 
 class ExerciseSchema(BaseModel):
     """Exercise library schema."""
-    
+
     id: str
     name: str
     description: Optional[str] = None
@@ -68,31 +68,52 @@ class ExerciseSchema(BaseModel):
 
 
 class AnalysisRequest(BaseModel):
-    """Analysis request schema."""
-    
+    """Analysis request schema for movement assessment."""
+
     video_url: Optional[str] = None
-    image_data: Optional[str] = None  # Base64 encoded
-    exercise_type: str
-    user_id: UUID
+    image_data: Optional[str] = None  # Base64 encoded (kept for testing / behind feature flag)
+    exercise_type: str = Field(default="rehab_assessment")
+    exercise_id: Optional[str] = "shoulder-abduction"
+    user_id: Optional[UUID] = None
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 
 class MetricWithTag(BaseModel):
-    """Individual metric with measured/estimated tag."""
+    """
+    Individual metric with measured vs estimated tag.
+    - 'measured': direct geometric computation (e.g., joint angle, ROM, symmetry).
+    - 'estimated': inferred proxy or model prediction (e.g., quality score, stability score).
+    """
 
     value: float
-    is_measured: bool  # True for direct geometric computation, False for inferred proxy
-    description: str = None
+    tag: Literal["measured", "estimated"] = "measured"
+    is_measured: bool = True
+    description: Optional[str] = None
+    unit: Optional[str] = None
+    reference_mean: Optional[float] = None
+    deviation: Optional[float] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_tags(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "tag" in data and "is_measured" not in data:
+                data["is_measured"] = (data["tag"] == "measured")
+            elif "is_measured" in data and "tag" not in data:
+                data["tag"] = "measured" if data["is_measured"] else "estimated"
+        return data
 
 
 class AnalysisResponse(BaseModel):
-    """Analysis response schema."""
+    """Analysis response schema with measured/estimated tags and clinical explanations."""
 
     analysis_id: UUID
-    exercise_type: str  # yoga, posture, gait, balance, flexibility, rehab_assessment
-    overall_score: float  # 0-100 quality score
-    score_breakdown: Dict[str, float]  # Individual component scores (angle_accuracy, symmetry, etc.)
+    exercise_type: str  # rehab_assessment, yoga, posture, gait, balance, flexibility
+    overall_score: float  # 0-100 composite quality score
+    score_breakdown: Dict[str, float]  # angle_accuracy, symmetry, stability, range_of_motion
     metrics: Dict[str, MetricWithTag]  # Individual metrics with measured/estimated tags
-    feedback: List[str] = []  # Human-readable feedback
-    explanations: Dict[str, str] = {}  # Explanations for low scores (joint/phase causing issues)
+    feedback: List[str] = []  # Clinical and form feedback
+    explanations: Dict[str, str] = {}  # Explanations for low scores (identifying joint/phase deviations)
+    clinical_quality_score: Optional[float] = None  # Continuous score from KIMORE regression head
+    movement_correct: Optional[bool] = None  # Binary classification from UI-PRMD classification head
     processing_time_ms: int
