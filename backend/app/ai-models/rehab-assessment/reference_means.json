@@ -1,0 +1,269 @@
+{
+  "shoulder-abduction": {
+    "left_shoulder_angle": {
+      "mean": 92.5,
+      "std": 6.8,
+      "target": 90.0
+    },
+    "right_shoulder_angle": {
+      "mean": 91.8,
+      "std": 7.1,
+      "target": 90.0
+    },
+    "left_elbow_angle": {
+      "mean": 174.0,
+      "std": 5.2,
+      "target": 180.0
+    },
+    "right_elbow_angle": {
+      "mean": 173.5,
+      "std": 5.0,
+      "target": 180.0
+    },
+    "trunk_angle": {
+      "mean": 4.5,
+      "std": 2.1,
+      "target": 0.0
+    },
+    "shoulder_level_symmetry": {
+      "mean": 0.96,
+      "std": 0.03,
+      "target": 1.0
+    }
+  },
+  "shoulder-flexion": {
+    "left_shoulder_angle": {
+      "mean": 168.0,
+      "std": 8.5,
+      "target": 175.0
+    },
+    "right_shoulder_angle": {
+      "mean": 167.5,
+      "std": 8.0,
+      "target": 175.0
+    },
+    "left_elbow_angle": {
+      "mean": 175.0,
+      "std": 4.5,
+      "target": 180.0
+    },
+    "right_elbow_angle": {
+      "mean": 174.8,
+      "std": 4.8,
+      "target": 180.0
+    },
+    "trunk_angle": {
+      "mean": 6.0,
+      "std": 2.5,
+      "target": 0.0
+    }
+  },
+  "elbow-flexion": {
+    "left_elbow_angle": {
+      "mean": 52.0,
+      "std": 6.5,
+      "target": 45.0
+    },
+    "right_elbow_angle": {
+      "mean": 53.0,
+      "std": 6.2,
+      "target": 45.0
+    },
+    "left_shoulder_angle": {
+      "mean": 15.0,
+      "std": 4.0,
+      "target": 10.0
+    },
+    "right_shoulder_angle": {
+      "mean": 14.5,
+      "std": 3.8,
+      "target": 10.0
+    }
+  },
+  "knee-extension": {
+    "left_knee_angle": {
+      "mean": 172.0,
+      "std": 5.5,
+      "target": 175.0
+    },
+    "right_knee_angle": {
+      "mean": 171.5,
+      "std": 5.8,
+      "target": 175.0
+    },
+    "left_hip_angle": {
+      "mean": 95.0,
+      "std": 6.0,
+      "target": 90.0
+    },
+    "right_hip_angle": {
+      "mean": 94.5,
+      "std": 6.2,
+      "target": 90.0
+    }
+  },
+  "hip-abduction": {
+    "left_hip_angle": {
+      "mean": 42.0,
+      "std": 5.0,
+      "target": 45.0
+    },
+    "right_hip_angle": {
+      "mean": 41.5,
+      "std": 5.2,
+      "target": 45.0
+    },
+    "trunk_angle": {
+      "mean": 5.0,
+      "std": 2.2,
+      "target": 0.0
+    }
+  },
+  "sit-to-stand": {
+    "left_knee_angle": {
+      "mean": 175.0,
+      "std": 6.0,
+      "target": 180.0
+    },
+    "right_knee_angle": {
+      "mean": 174.5,
+      "std": 6.2,
+      "target": 180.0
+    },
+    "left_hip_angle": {
+      "mean": 172.0,
+      "std": 5.5,
+      "target": 180.0
+    },
+    "right_hip_angle": {
+      "mean": 171.8,
+      "std": 5.7,
+      "target": 180.0
+    },
+    "knee_angle_symmetry": {
+      "mean": 0.95,
+      "std": 0.04,
+      "target": 1.0
+    }
+  },
+  "warrior_ii": {
+    "left_knee_angle": {
+      "mean": 94.0,
+      "std": 6.2,
+      "target": 90.0
+    },
+    "right_knee_angle": {
+      "mean": 172.0,
+      "std": 5.1,
+      "target": 175.0
+    },
+    "left_shoulder_angle": {
+      "mean": 88.5,
+      "std": 5.5,
+      "target": 90.0
+    },
+    "right_shoulder_angle": {
+      "mean": 89.0,
+      "std": 5.2,
+      "target": 90.0
+    },
+    "trunk_angle": {
+      "mean": 3.0,
+      "std": 1.8,
+      "target": 0.0
+    }
+  },
+  "downward_dog": {
+    "left_hip_angle": {
+      "mean": 72.0,
+      "std": 6.5,
+      "target": 70.0
+    },
+    "right_hip_angle": {
+      "mean": 71.5,
+      "std": 6.8,
+      "target": 70.0
+    },
+    "left_shoulder_angle": {
+      "mean": 162.0,
+      "std": 7.0,
+      "target": 165.0
+    },
+    "right_shoulder_angle": {
+      "mean": 161.5,
+      "std": 7.2,
+      "target": 165.0
+    }
+  },
+  "tree_pose": {
+    "left_knee_angle": {
+      "mean": 175.0,
+      "std": 4.5,
+      "target": 180.0
+    },
+    "right_knee_angle": {
+      "mean": 48.0,
+      "std": 6.0,
+      "target": 45.0
+    },
+    "trunk_angle": {
+      "mean": 2.5,
+      "std": 1.5,
+      "target": 0.0
+    },
+    "overall_stability": {
+      "mean": 0.91,
+      "std": 0.05,
+      "target": 1.0
+    }
+  },
+  "goddess_pose": {
+    "left_knee_angle": {
+      "mean": 95.0,
+      "std": 6.5,
+      "target": 90.0
+    },
+    "right_knee_angle": {
+      "mean": 94.5,
+      "std": 6.8,
+      "target": 90.0
+    },
+    "left_shoulder_angle": {
+      "mean": 89.0,
+      "std": 5.0,
+      "target": 90.0
+    },
+    "right_shoulder_angle": {
+      "mean": 89.5,
+      "std": 5.2,
+      "target": 90.0
+    }
+  },
+  "plank": {
+    "trunk_angle": {
+      "mean": 88.0,
+      "std": 3.5,
+      "target": 90.0
+    },
+    "left_elbow_angle": {
+      "mean": 175.0,
+      "std": 4.0,
+      "target": 180.0
+    },
+    "right_elbow_angle": {
+      "mean": 174.5,
+      "std": 4.2,
+      "target": 180.0
+    },
+    "left_knee_angle": {
+      "mean": 176.0,
+      "std": 3.8,
+      "target": 180.0
+    },
+    "right_knee_angle": {
+      "mean": 175.5,
+      "std": 4.0,
+      "target": 180.0
+    }
+  }
+}
