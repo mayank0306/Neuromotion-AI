@@ -1,6 +1,6 @@
 """API dependencies for FastAPI."""
 
-from typing import Annotated
+from typing import Annotated, Optional
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -16,7 +16,9 @@ import redis.asyncio as redis
 from app.services.auth_service import AuthService
 from app.services.user_service import UserService
 from app.services.movement_service import MovementService
-from app.ai.pose_estimator import get_pose_estimator
+from app.services.ai_service import AIService
+
+_ai_service_instance: Optional[AIService] = None
 
 
 # Database dependencies
@@ -42,9 +44,12 @@ def get_movement_service(
     return MovementService(db)
 
 
-def get_ai_service():
+def get_ai_service() -> AIService:
     """Dependency for AI Service."""
-    return get_pose_estimator()
+    global _ai_service_instance
+    if _ai_service_instance is None:
+        _ai_service_instance = AIService()
+    return _ai_service_instance
 
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")

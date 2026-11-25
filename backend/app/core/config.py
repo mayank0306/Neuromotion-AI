@@ -62,7 +62,9 @@ class Settings(BaseSettings):
     POSE_MODEL_PATH: str = "models/blazepose"
     MODEL_CONFIDENCE_THRESHOLD: float = 0.5
     INPUT_SIZE_STR: str = "256,256"
-    # Scoring weights for overall quality score
+    # Feature flag: V1 input is recorded video upload only. Real-time is behind this flag.
+    ENABLE_REALTIME_ANALYSIS: bool = False
+    # Scoring weights for overall quality score (0.4, 0.2, 0.25, 0.15)
     ANGLE_ACCURACY_WEIGHT: float = 0.4
     SYMMETRY_WEIGHT: float = 0.2
     STABILITY_WEIGHT: float = 0.25
