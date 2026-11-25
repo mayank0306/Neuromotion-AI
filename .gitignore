@@ -92,6 +92,8 @@ models/
 *.db
 *.sqlite3
 *.db-journal
+datasets/*
+!datasets/README.md
 
 # Media
 *.mp4
