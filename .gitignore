@@ -10,8 +10,11 @@ venv/
 pip-log.txt
 pip-delete-this-directory.txt
 .pytest_cache/
+**/.pytest_cache/
 .coverage
+**/.coverage
 htmlcov/
+**/htmlcov/
 .tox/
 .nox/
 coverage.xml
