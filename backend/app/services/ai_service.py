@@ -1,14 +1,34 @@
-"""AI service for pose estimation and analysis."""
+"""
+AI service for pose estimation and movement analysis.
+NeuroMotion: AI-Assisted Rehabilitation Movement Assessment.
+Flagship Module: Rehab Movement Quality Assessment.
+Supporting Module: Yoga Pose Classification.
+Deterministic Geometric Modules: Posture, Gait, Balance, Flexibility.
+"""
 
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Tuple, Dict, Any, Union
+from pathlib import Path
 import numpy as np
+import torch
+import cv2
 import structlog
 from datetime import datetime
 
 from app.core.config import settings
-from app.schemas.movement import AnalysisResponse, AnalysisRequest, PoseLandmarkSchema
+from app.schemas.movement import (
+    AnalysisResponse,
+    AnalysisRequest,
+    PoseLandmarkSchema,
+    MetricWithTag,
+)
 from app.exceptions import AppException
 from app.analysis.feature_engineering import FeatureEngineering
+from app.analysis.models import (
+    RehabQualityMLP,
+    YogaClassifierMLP,
+    load_reference_stats,
+    DEFAULT_REFERENCE_STATS,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -17,14 +37,25 @@ class AIService:
     """
     AI service for pose estimation and movement analysis.
 
-    Uses MediaPipe BlazePose for real-time pose detection and
-    specialized models for different movement analysis modules.
+    Uses pretrained MediaPipe BlazePose for real-time / video pose detection,
+    a unified FeatureEngineering layer, and two PyTorch MLPs:
+    1. RehabQualityMLP (Flagship: UI-PRMD classification head + KIMORE regression head)
+    2. YogaClassifierMLP (Supporting: Kaggle 5-Class Yoga pose classification)
+    Deterministic geometry for Posture, Gait, Balance, and Flexibility.
     """
 
     def __init__(self):
         self.pose_estimator = None
         self.feature_engineering = FeatureEngineering()
         self._loaded = False
+
+        # PyTorch models
+        self.rehab_model: Optional[RehabQualityMLP] = None
+        self.yoga_model: Optional[YogaClassifierMLP] = None
+
+        # Persisted reference statistics for angle deviation calculations
+        ref_file = Path(__file__).resolve().parents[1] / "data" / "reference_stats.json"
+        self.reference_stats: Dict[str, Any] = load_reference_stats(ref_file)
 
         # MediaPipe pose landmark names (33 landmarks)
         self.LANDMARK_NAMES = [
@@ -63,15 +94,43 @@ class AIService:
             "right_foot_index",
         ]
 
+        self._init_models()
+
+    def _init_models(self) -> None:
+        """Initialize and load PyTorch model checkpoints if available."""
+        models_dir = Path(__file__).resolve().parents[1] / "ai-models"
+        rehab_ckpt = models_dir / "rehab-assessment" / "rehab_quality_mlp.pt"
+        yoga_ckpt = models_dir / "yoga-classifier" / "yoga_classifier_mlp.pt"
+
+        # 1. Flagship Rehab Quality Model
+        self.rehab_model = RehabQualityMLP(input_features=self.feature_engineering.NUM_FEATURES)
+        if rehab_ckpt.exists():
+            try:
+                ckpt = torch.load(rehab_ckpt, map_location=torch.device("cpu"), weights_only=True)
+                self.rehab_model.load_state_dict(ckpt["model_state_dict"])
+                logger.info("Loaded RehabQualityMLP checkpoint", path=str(rehab_ckpt))
+            except Exception as e:
+                logger.warning("Could not load rehab checkpoint, using initialized weights", error=str(e))
+        self.rehab_model.eval()
+
+        # 2. Supporting Yoga Classifier Model
+        self.yoga_model = YogaClassifierMLP(input_features=self.feature_engineering.NUM_FEATURES, num_classes=5)
+        if yoga_ckpt.exists():
+            try:
+                ckpt = torch.load(yoga_ckpt, map_location=torch.device("cpu"), weights_only=True)
+                self.yoga_model.load_state_dict(ckpt["model_state_dict"])
+                logger.info("Loaded YogaClassifierMLP checkpoint", path=str(yoga_ckpt))
+            except Exception as e:
+                logger.warning("Could not load yoga checkpoint, using initialized weights", error=str(e))
+        self.yoga_model.eval()
+
     async def load_model(self):
-        """Load AI models (lazy initialization)."""
+        """Load MediaPipe pose estimator (lazy initialization)."""
         if self._loaded:
             return
 
-        logger.info("Loading AI models...")
-
+        logger.info("Loading MediaPipe BlazePose...")
         try:
-            # Lazy import to avoid startup overhead
             import mediapipe as mp
 
             self.pose_estimator = mp.solutions.pose.Pose(
@@ -81,892 +140,732 @@ class AIService:
                 min_detection_confidence=settings.MODEL_CONFIDENCE_THRESHOLD,
                 min_tracking_confidence=settings.MODEL_CONFIDENCE_THRESHOLD,
             )
-
             self._loaded = True
-            logger.info("AI models loaded successfully")
-
+            logger.info("MediaPipe BlazePose loaded successfully")
         except ImportError:
-            logger.warning("MediaPipe not available, using mock model")
-            self._loaded = True  # Mark as loaded even if using mock
+            logger.warning("MediaPipe not available, using mock mode")
+            self._loaded = True
 
     async def estimate_pose(self, image: np.ndarray) -> Optional[List[Tuple[float, float, float, float]]]:
         """
-        Estimate pose from an image frame.
+        Estimate 33 pose landmarks from an image frame using MediaPipe BlazePose.
 
         Args:
-            image: RGB image as numpy array.
+            image: RGB image as numpy array
 
         Returns:
-            List of (x, y, z, visibility) tuples for each landmark.
+            List of (x, y, z, visibility) tuples
         """
         if not self._loaded:
             await self.load_model()
 
-        try:
-            import cv2
+        if self.pose_estimator is None:
+            # Fallback mock landmarks for testing environments
+            return [(0.0, 0.0, 0.0, 1.0) for _ in range(33)]
 
-            # Convert to RGB if needed
-            if len(image.shape) == 3:
+        try:
+            if len(image.shape) == 3 and image.shape[2] == 3:
                 image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             else:
                 image_rgb = image
 
             results = self.pose_estimator.process(image_rgb)
-
             if results.pose_landmarks:
-                landmarks = [
+                return [
                     (lm.x, lm.y, lm.z, lm.visibility)
                     for lm in results.pose_landmarks.landmark
                 ]
-                return landmarks
-
             return None
-
         except Exception as e:
             logger.error("Pose estimation failed", error=str(e))
             return None
 
     def _convert_to_landmark_dict(self, landmarks: List[Tuple[float, float, float, float]]) -> Dict[str, Tuple[float, float, float]]:
-        """
-        Convert MediaPipe landmarks to dictionary by name.
-
-        Args:
-            landmarks: List of (x, y, z, visibility) tuples
-
-        Returns:
-            Dictionary mapping landmark name to (x, y, z) tuple
-        """
+        """Convert list of (x, y, z, visibility) tuples into dictionary keyed by landmark name."""
         landmark_dict = {}
         for i, name in enumerate(self.LANDMARK_NAMES):
             if i < len(landmarks):
                 lm = landmarks[i]
-                landmark_dict[name] = (lm[0], lm[1], lm[2])  # x, y, z (ignore visibility for calculations)
+                landmark_dict[name] = (float(lm[0]), float(lm[1]), float(lm[2]))
+            else:
+                landmark_dict[name] = (0.0, 0.0, 0.0)
         return landmark_dict
 
-    async def analyze_yoga_pose(self, landmarks_dict: Dict[str, Tuple[float, float, float]]) -> Dict[str, Any]:
+    def _normalize_input_frames(self, input_data: Union[Dict[str, Tuple[float, float, float]],
+                                                        List[Dict[str, Tuple[float, float, float]]],
+                                                        List[List[Tuple[float, float, float, float]]]]) -> List[Dict[str, Tuple[float, float, float]]]:
+        """Normalize various input formats into a list of landmark dictionary frames."""
+        if isinstance(input_data, dict):
+            return [input_data]
+        elif isinstance(input_data, list) and len(input_data) > 0:
+            first = input_data[0]
+            if isinstance(first, dict):
+                return input_data
+            elif isinstance(first, list):
+                return [self._convert_to_landmark_dict(frame) for frame in input_data]
+        return [{name: (0.0, 0.0, 0.0) for name in self.LANDMARK_NAMES}]
+
+    async def process_video_frames(self, video_path: str, max_frames: int = 150) -> List[Dict[str, Tuple[float, float, float]]]:
         """
-        Analyze yoga pose using classification approach.
+        Process uploaded video file: extract frames with OpenCV and detect poses with BlazePose.
 
         Args:
-            landmarks_dict: Dictionary of landmark names to (x, y, z) tuples
+            video_path: Local path to recorded video file
+            max_frames: Maximum frames to process
 
         Returns:
-            Analysis results for yoga pose
+            List of detected landmark frames
         """
-        # TODO: Implement actual yoga pose classification model
-        # For now, return placeholder with measured/estimated tags
+        if not self._loaded:
+            await self.load_model()
 
-        # Calculate some basic angles for demonstration
-        left_shoulder = landmarks_dict.get("left_shoulder", (0, 0, 0))
-        left_elbow = landmarks_dict.get("left_elbow", (0, 0, 0))
-        left_wrist = landmarks_dict.get("left_wrist", (0, 0, 0))
+        frames_landmarks: List[Dict[str, Tuple[float, float, float]]] = []
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            logger.error("Could not open video file", video_path=video_path)
+            return frames_landmarks
 
-        elbow_angle = self.feature_engineering.calculate_angle(left_shoulder, left_elbow, left_wrist)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        step = max(1, frame_count // max_frames) if frame_count > max_frames else 1
 
-        # Mock classification result
-        pose_name = "warrior_ii"  # This would come from actual model
-        confidence = 0.85
+        idx = 0
+        while cap.isOpened() and len(frames_landmarks) < max_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if idx % step == 0:
+                pose = await self.estimate_pose(frame)
+                if pose is not None:
+                    frames_landmarks.append(self._convert_to_landmark_dict(pose))
+            idx += 1
 
-        # Calculate metrics
-        metrics = {
-            "left_elbow_angle": MetricWithTag(
-                value=elbow_angle,
-                is_measured=True,
-                description="Left elbow angle in degrees"
-            ),
-            "pose_confidence": MetricWithTag(
-                value=confidence,
-                is_measured=False,
-                description="Model confidence in pose classification"
-            )
-        }
+        cap.release()
+        logger.info("Processed video frames", total_extracted=len(frames_landmarks), video_path=video_path)
+        return frames_landmarks
 
-        # Calculate overall score (0-100)
-        overall_score = confidence * 100
+    # -----------------------------------------------------------------------
+    # Flagship Module: Rehabilitation Movement Quality Assessment
+    # -----------------------------------------------------------------------
 
-        # Score breakdown
-        score_breakdown = {
-            "pose_accuracy": confidence * 100,
-            "angle_accuracy": 80.0,  # Placeholder
-            "symmetry": 75.0,  # Placeholder
-            "stability": 85.0   # Placeholder
-        }
+    async def analyze_rehab_movement(self,
+                                     landmarks_input: Union[Dict[str, Tuple[float, float, float]],
+                                                            List[Dict[str, Tuple[float, float, float]]]],
+                                     exercise_id: str = "shoulder-abduction") -> Dict[str, Any]:
+        """
+        Flagship module: Rehab Movement Quality Assessment.
+        Predicts continuous quality score (via KIMORE regression head),
+        evaluates correct/incorrect form (via UI-PRMD classification head),
+        and explains which joint/phase caused a low score using deviations from persisted class means.
+        """
+        frames = self._normalize_input_frames(landmarks_input)
+        seq_features = self.feature_engineering.extract_sequence_features(frames)
+        feat_vector = self.feature_engineering.compute_feature_vector(seq_features)
 
-        # Feedback
-        feedback = [
-            f"Detected pose: {pose_name.replace('_', ' ').title()} with {confidence:.0%} confidence",
-            f"Left elbow angle: {elbow_angle:.1f}°"
+        # Run through dual-head PyTorch MLP
+        with torch.no_grad():
+            x_tensor = torch.from_numpy(feat_vector).unsqueeze(0)
+            logits, raw_quality_score = self.rehab_model(x_tensor)
+            probs = torch.softmax(logits, dim=-1)
+            is_correct = bool(torch.argmax(probs, dim=-1).item() == 1)
+            form_confidence = float(probs[0, 1 if is_correct else 0].item())
+            clinical_quality_score = float(raw_quality_score.item())
+
+        # Configurable scoring formula constants:
+        # Angle accuracy 0.4, symmetry 0.2, stability 0.25, ROM 0.15
+        weights = settings.SCORING_WEIGHTS
+
+        # Retrieve persisted reference means for this exercise
+        exercise_key = exercise_id.lower().replace("_", "-")
+        ref_dict = self.reference_stats.get(exercise_key, self.reference_stats.get("shoulder-abduction", {}))
+
+        # Deviation analysis & joint/phase explanations
+        explanations: Dict[str, str] = {}
+        deviations: Dict[str, float] = {}
+        angle_accuracies: List[float] = []
+
+        for metric_name, ref_info in ref_dict.items():
+            if isinstance(ref_info, dict) and "mean" in ref_info:
+                target_mean = ref_info["mean"]
+                target_std = max(1e-3, ref_info.get("std", 5.0))
+                measured_val = seq_features.get(f"{metric_name}_mean", seq_features.get(metric_name, target_mean))
+
+                dev = float(measured_val - target_mean)
+                deviations[metric_name] = dev
+
+                # Calculate joint angle accuracy (0-100)
+                joint_acc = max(0.0, 100.0 - (abs(dev) / target_std) * 15.0)
+                angle_accuracies.append(joint_acc)
+
+                # If deviation is significant, generate clinical explanation
+                if abs(dev) > 12.0:
+                    direction = "above" if dev > 0 else "below"
+                    readable_name = metric_name.replace("_", " ").title()
+                    explanations[metric_name] = (
+                        f"{readable_name} measured at {measured_val:.1f}°, which is {abs(dev):.1f}° {direction} "
+                        f"the target mean ({target_mean:.1f}°). Check range of motion and joint alignment."
+                    )
+
+        mean_angle_accuracy = float(np.mean(angle_accuracies)) if angle_accuracies else 85.0
+
+        # Bilateral symmetry score
+        sym_metrics = [
+            seq_features.get("shoulder_level_symmetry", 0.95),
+            seq_features.get("hip_level_symmetry", 0.95),
+            seq_features.get("elbow_angle_symmetry", 0.90),
+            seq_features.get("shoulder_angle_symmetry", 0.90),
+            seq_features.get("knee_angle_symmetry", 0.90),
         ]
+        symmetry_score = float(np.mean(sym_metrics) * 100.0)
 
-        return {
-            "overall_score": overall_score,
-            "score_breakdown": score_breakdown,
-            "metrics": metrics,
-            "feedback": feedback,
-            "explanations": {}
+        # Stability score
+        stability_score = float(seq_features.get("overall_stability", 0.85) * 100.0)
+
+        # Range of motion score
+        rom_values = [
+            seq_features.get("left_shoulder_angle_rom", 40.0),
+            seq_features.get("right_shoulder_angle_rom", 40.0),
+            seq_features.get("left_elbow_angle_rom", 30.0),
+            seq_features.get("right_elbow_angle_rom", 30.0),
+        ]
+        mean_rom = float(np.mean(rom_values))
+        rom_score = min(100.0, max(20.0, mean_rom * 1.5))
+
+        # Weighted composite score formula
+        score_breakdown = {
+            "angle_accuracy": mean_angle_accuracy * weights.get("angle_accuracy", 0.4),
+            "symmetry": symmetry_score * weights.get("symmetry", 0.2),
+            "stability": stability_score * weights.get("stability", 0.25),
+            "range_of_motion": rom_score * weights.get("range_of_motion", 0.15),
         }
+        overall_composite = sum(score_breakdown.values())
 
-    async def analyze_rehab_movement(self, landmarks_dict: Dict[str, Tuple[float, float, float]], exercise_type: str) -> Dict[str, Any]:
-        """
-        Analyze rehabilitation movement using quality score prediction.
+        # Blend composite score with KIMORE regression head score
+        final_quality_score = float(0.6 * overall_composite + 0.4 * clinical_quality_score)
 
-        Args:
-            landmarks_dict: Dictionary of landmark names to (x, y, z) tuples
-            exercise_type: Type of rehab exercise being performed
-
-        Returns:
-            Analysis results for rehab movement
-        """
-        # TODO: Implement actual rehab quality model (classification + regression)
-        # For now, return placeholder with measured/estimated tags
-
-        # Calculate some basic metrics for demonstration
-        left_shoulder = landmarks_dict.get("left_shoulder", (0, 0, 0))
-        right_shoulder = landmarks_dict.get("right_shoulder", (0, 0, 0))
-        left_elbow = landmarks_dict.get("left_elbow", (0, 0, 0))
-        right_elbow = landmarks_dict.get("right_elbow", (0, 0, 0))
-
-        # Calculate shoulder symmetry
-        shoulder_height_diff = abs(left_shoulder[1] - right_shoulder[1])  # y-coordinate difference
-        shoulder_symmetry = self.feature_engineering.calculate_symmetry(
-            left_shoulder[1], right_shoulder[1]
-        )
-
-        # Calculate elbow angles
-        left_elbow_angle = self.feature_engineering.calculate_angle(
-            left_shoulder, left_elbow,
-            landmarks_dict.get("left_wrist", (0, 0, 0))
-        ) if "left_wrist" in landmarks_dict else 0
-
-        right_elbow_angle = self.feature_engineering.calculate_angle(
-            right_shoulder, right_elbow,
-            landmarks_dict.get("right_wrist", (0, 0, 0))
-        ) if "right_wrist" in landmarks_dict else 0
-
-        elbow_symmetry = self.feature_engineering.calculate_symmetry(left_elbow_angle, right_elbow_angle)
-
-        # Mock quality score (0-100)
-        # In reality, this would come from a trained model
-        base_score = 85.0
-        symmetry_bonus = (shoulder_symmetry + elbow_symmetry) * 10
-        quality_score = min(100.0, base_score + symmetry_bonus)
-
-        # Calculate metrics
-        metrics = {
-            "left_shoulder_y": MetricWithTag(
-                value=left_shoulder[1],
-                is_measured=True,
-                description="Left shoulder Y coordinate"
+        # Structure metrics with measured vs estimated tags
+        metrics: Dict[str, MetricWithTag] = {
+            "left_shoulder_angle": MetricWithTag(
+                value=float(seq_features.get("left_shoulder_angle_mean", 90.0)),
+                tag="measured",
+                unit="degrees",
+                reference_mean=ref_dict.get("left_shoulder_angle", {}).get("mean"),
+                deviation=deviations.get("left_shoulder_angle"),
+                description="Mean left shoulder abduction/flexion angle",
             ),
-            "right_shoulder_y": MetricWithTag(
-                value=right_shoulder[1],
-                is_measured=True,
-                description="Right shoulder Y coordinate"
-            ),
-            "shoulder_symmetry": MetricWithTag(
-                value=shoulder_symmetry,
-                is_measured=True,
-                description="Shoulder height symmetry (0-1)"
+            "right_shoulder_angle": MetricWithTag(
+                value=float(seq_features.get("right_shoulder_angle_mean", 90.0)),
+                tag="measured",
+                unit="degrees",
+                reference_mean=ref_dict.get("right_shoulder_angle", {}).get("mean"),
+                deviation=deviations.get("right_shoulder_angle"),
+                description="Mean right shoulder abduction/flexion angle",
             ),
             "left_elbow_angle": MetricWithTag(
-                value=left_elbow_angle,
-                is_measured=True,
-                description="Left elbow angle in degrees"
+                value=float(seq_features.get("left_elbow_angle_mean", 170.0)),
+                tag="measured",
+                unit="degrees",
+                reference_mean=ref_dict.get("left_elbow_angle", {}).get("mean"),
+                deviation=deviations.get("left_elbow_angle"),
+                description="Mean left elbow angle",
             ),
             "right_elbow_angle": MetricWithTag(
-                value=right_elbow_angle,
-                is_measured=True,
-                description="Right elbow angle in degrees"
+                value=float(seq_features.get("right_elbow_angle_mean", 170.0)),
+                tag="measured",
+                unit="degrees",
+                reference_mean=ref_dict.get("right_elbow_angle", {}).get("mean"),
+                deviation=deviations.get("right_elbow_angle"),
+                description="Mean right elbow angle",
             ),
-            "elbow_symmetry": MetricWithTag(
-                value=elbow_symmetry,
-                is_measured=True,
-                description="Elbow angle symmetry (0-1)"
+            "trunk_angle": MetricWithTag(
+                value=float(seq_features.get("trunk_angle_mean", 0.0)),
+                tag="measured",
+                unit="degrees",
+                description="Mean spinal trunk vertical inclination",
             ),
-            "quality_score": MetricWithTag(
-                value=quality_score,
-                is_measured=False,
-                description="Predicted movement quality score (0-100)"
-            )
+            "bilateral_symmetry": MetricWithTag(
+                value=symmetry_score,
+                tag="measured",
+                unit="score (0-100)",
+                description="Measured bilateral movement symmetry",
+            ),
+            "range_of_motion": MetricWithTag(
+                value=rom_score,
+                tag="measured",
+                unit="score (0-100)",
+                description="Measured dynamic range of motion",
+            ),
+            "stability_index": MetricWithTag(
+                value=stability_score,
+                tag="estimated",
+                unit="score (0-100)",
+                description="Estimated stability derived from postural sway and angular CV",
+            ),
+            "clinical_quality_score": MetricWithTag(
+                value=clinical_quality_score,
+                tag="estimated",
+                unit="score (0-100)",
+                description="Continuous quality score predicted by KIMORE regression head",
+            ),
+            "movement_form_classification": MetricWithTag(
+                value=1.0 if is_correct else 0.0,
+                tag="estimated",
+                unit="binary (1=correct, 0=incorrect)",
+                description="UI-PRMD form correctness classification",
+            ),
         }
 
-        # Score breakdown based on configurable weights
-        angle_accuracy = min(100.0, 100.0 - abs(left_elbow_angle - 90.0))  # Example: target 90°
+        # Clinical feedback
+        feedback = [
+            f"Exercise: {exercise_id.replace('-', ' ').title()}",
+            f"Overall Quality Score: {final_quality_score:.1f}/100",
+            f"Clinician-Equivalent Rating: {clinical_quality_score:.1f}/100 ({'Optimal Execution' if is_correct else 'Compensatory Patterns Detected'})",
+        ]
+        if explanations:
+            feedback.append(f"Identified {len(explanations)} joint deviations requiring correction.")
+            for exp in explanations.values():
+                feedback.append(f"• {exp}")
+        else:
+            feedback.append("Excellent form! Movement closely matches reference clinical kinematics.")
+
+        return {
+            "overall_score": round(final_quality_score, 1),
+            "score_breakdown": {k: round(v, 1) for k, v in score_breakdown.items()},
+            "metrics": metrics,
+            "feedback": feedback,
+            "explanations": explanations,
+            "clinical_quality_score": round(clinical_quality_score, 1),
+            "movement_correct": is_correct,
+        }
+
+    # -----------------------------------------------------------------------
+    # Supporting Module: Yoga Pose Classification
+    # -----------------------------------------------------------------------
+
+    async def analyze_yoga_pose(self,
+                                landmarks_input: Union[Dict[str, Tuple[float, float, float]],
+                                                       List[Dict[str, Tuple[float, float, float]]]]) -> Dict[str, Any]:
+        """
+        Supporting module: Yoga pose classification using Kaggle Yoga 5-Class MLP.
+        """
+        frames = self._normalize_input_frames(landmarks_input)
+        seq_features = self.feature_engineering.extract_sequence_features(frames)
+        feat_vector = self.feature_engineering.compute_feature_vector(seq_features)
+
+        # Run YogaClassifierMLP
+        with torch.no_grad():
+            x_tensor = torch.from_numpy(feat_vector).unsqueeze(0)
+            logits = self.yoga_model(x_tensor)
+            probs = torch.softmax(logits, dim=-1)
+            pred_class_idx = int(torch.argmax(probs, dim=-1).item())
+            confidence = float(probs[0, pred_class_idx].item())
+
+        predicted_pose = YogaClassifierMLP.YOGA_CLASSES[pred_class_idx]
+        ref_dict = self.reference_stats.get(predicted_pose, {})
+
+        # Compute deviations from reference pose mean
+        explanations = {}
+        deviations = {}
+        for metric_name, ref_info in ref_dict.items():
+            if isinstance(ref_info, dict) and "mean" in ref_info:
+                target_mean = ref_info["mean"]
+                measured_val = seq_features.get(f"{metric_name}_mean", seq_features.get(metric_name, target_mean))
+                dev = float(measured_val - target_mean)
+                deviations[metric_name] = dev
+                if abs(dev) > 15.0:
+                    explanations[metric_name] = (
+                        f"{metric_name.replace('_', ' ').title()} is {measured_val:.1f}°, "
+                        f"deviating by {dev:+.1f}° from standard {predicted_pose.replace('_', ' ').title()}."
+                    )
+
+        overall_score = float(confidence * 100.0)
         score_breakdown = {
-            "angle_accuracy": angle_accuracy * 0.4,  # 40% weight
-            "symmetry": ((shoulder_symmetry + elbow_symmetry) / 2) * 100 * 0.2,  # 20% weight
-            "stability": 85.0 * 0.25,  # 25% weight (placeholder)
-            "range_of_motion": 80.0 * 0.15  # 15% weight (placeholder)
+            "angle_accuracy": 85.0 * 0.4,
+            "symmetry": float(seq_features.get("shoulder_level_symmetry", 0.95) * 100 * 0.2),
+            "stability": float(seq_features.get("overall_stability", 0.90) * 100 * 0.25),
+            "range_of_motion": 80.0 * 0.15,
         }
 
+        metrics = {
+            "pose_confidence": MetricWithTag(
+                value=round(confidence * 100.0, 1),
+                tag="estimated",
+                unit="percent",
+                description=f"Model confidence in {predicted_pose.replace('_', ' ').title()}",
+            ),
+            "left_elbow_angle": MetricWithTag(
+                value=round(float(seq_features.get("left_elbow_angle_mean", 170.0)), 1),
+                tag="measured",
+                unit="degrees",
+                description="Left elbow angle",
+            ),
+            "right_elbow_angle": MetricWithTag(
+                value=round(float(seq_features.get("right_elbow_angle_mean", 170.0)), 1),
+                tag="measured",
+                unit="degrees",
+                description="Right elbow angle",
+            ),
+            "trunk_angle": MetricWithTag(
+                value=round(float(seq_features.get("trunk_angle_mean", 0.0)), 1),
+                tag="measured",
+                unit="degrees",
+                description="Trunk inclination relative to vertical",
+            ),
+            "stability": MetricWithTag(
+                value=round(float(seq_features.get("overall_stability", 0.90) * 100.0), 1),
+                tag="estimated",
+                unit="score (0-100)",
+                description="Estimated pose stability",
+            ),
+        }
+
+        feedback = [
+            f"Detected Pose: {predicted_pose.replace('_', ' ').title()} ({confidence:.0%} confidence)",
+            f"Overall Form Score: {overall_score:.1f}/100",
+        ]
+        for exp in explanations.values():
+            feedback.append(f"• {exp}")
+
+        return {
+            "overall_score": round(overall_score, 1),
+            "score_breakdown": {k: round(v, 1) for k, v in score_breakdown.items()},
+            "metrics": metrics,
+            "feedback": feedback,
+            "explanations": explanations,
+        }
+
+    # -----------------------------------------------------------------------
+    # Deterministic Geometric Modules: Posture, Gait, Balance, Flexibility
+    # -----------------------------------------------------------------------
+
+    async def analyze_posture(self,
+                              landmarks_input: Union[Dict[str, Tuple[float, float, float]],
+                                                     List[Dict[str, Tuple[float, float, float]]]]) -> Dict[str, Any]:
+        """Deterministic geometric posture analysis on landmarks. No ML models used."""
+        frames = self._normalize_input_frames(landmarks_input)
+        seq_features = self.feature_engineering.extract_sequence_features(frames)
+
+        shoulder_level = float(seq_features.get("shoulder_level_symmetry", 0.95))
+        hip_level = float(seq_features.get("hip_level_symmetry", 0.95))
+        trunk_dev = float(seq_features.get("trunk_angle_mean", 3.0))
+        head_tilt = float(seq_features.get("head_tilt_mean", 2.0))
+
+        # Geometric posture scores
+        shoulder_score = shoulder_level * 100.0
+        hip_score = hip_level * 100.0
+        spine_score = max(0.0, 100.0 - trunk_dev * 5.0)
+        head_score = max(0.0, 100.0 - head_tilt * 4.0)
+
+        # Composite score
+        weights = settings.SCORING_WEIGHTS
+        score_breakdown = {
+            "angle_accuracy": spine_score * weights.get("angle_accuracy", 0.4),
+            "symmetry": ((shoulder_score + hip_score) / 2.0) * weights.get("symmetry", 0.2),
+            "stability": float(seq_features.get("overall_stability", 0.95) * 100.0) * weights.get("stability", 0.25),
+            "range_of_motion": 90.0 * weights.get("range_of_motion", 0.15),
+        }
         overall_score = sum(score_breakdown.values())
 
-        # Feedback
-        feedback = [
-            f"Exercise: {exercise_type.replace('-', ' ').title()}",
-            f"Quality Score: {quality_score:.1f}/100"
-        ]
-
-        if shoulder_symmetry < 0.8:
-            feedback.append("Try to keep shoulders level during the movement")
-        if elbow_symmetry < 0.8:
-            feedback.append("Work on keeping both elbows moving symmetrically")
-
-        # Explanations for low scores
-        explanations = {}
-        if shoulder_symmetry < 0.7:
-            explanations["shoulder_symmetry"] = "Asymmetric shoulder height detected - may indicate compensatory movement"
-        if elbow_symmetry < 0.7:
-            explanations["elbow_symmetry"] = "Asymmetric elbow movement - consider focusing on equal bilateral movement"
-
-        return {
-            "overall_score": overall_score,
-            "score_breakdown": score_breakdown,
-            "metrics": metrics,
-            "feedback": feedback,
-            "explanations": explanations
-        }
-
-    async def analyze_posture(self, landmarks_dict: Dict[str, Tuple[float, float, float]]) -> Dict[str, Any]:
-        """
-        Analyze posture using geometric calculations.
-
-        Args:
-            landmarks_dict: Dictionary of landmark names to (x, y, z) tuples
-
-        Returns:
-            Analysis results for posture
-        """
-        # Calculate key posture metrics
-        left_shoulder = landmarks_dict.get("left_shoulder", (0, 0, 0))
-        right_shoulder = landmarks_dict.get("right_shoulder", (0, 0, 0))
-        left_ear = landmarks_dict.get("left_ear", (0, 0, 0))
-        right_ear = landmarks_dict.get("right_ear", (0, 0, 0))
-        left_hip = landmarks_dict.get("left_hip", (0, 0, 0))
-        right_hip = landmarks_dict.get("right_hip", (0, 0, 0))
-
-        # Shoulder level
-        shoulder_symmetry = self.feature_engineering.calculate_symmetry(
-            left_shoulder[1], right_shoulder[1]
-        )
-
-        # Head position (ear to shoulder)
-        left_head_tilt = abs(left_ear[1] - left_shoulder[1]) if left_ear and left_shoulder else 0
-        right_head_tilt = abs(right_ear[1] - right_shoulder[1]) if right_ear and right_shoulder else 0
-
-        # Pelvic level
-        pelvic_symmetry = self.feature_engineering.calculate_symmetry(
-            left_hip[1], right_hip[1]
-        )
-
-        # Spinal alignment (simplified)
-        shoulder_midpoint_y = (left_shoulder[1] + right_shoulder[1]) / 2
-        hip_midpoint_y = (left_hip[1] + right_hip[1]) / 2
-        spinal_vertical_alignment = abs(shoulder_midpoint_y - hip_midpoint_y)
-
-        # Mock overall score
-        overall_score = (
-            shoulder_symmetry * 0.3 +
-            (1.0 - min(left_head_tilt, right_head_tilt) * 5) * 0.2 +  # Head tilt penalty
-            pelvic_symmetry * 0.3 +
-            (1.0 - min(spinal_vertical_alignment * 10, 1.0)) * 0.2  # Spinal alignment
-        ) * 100
-
-        # Calculate metrics
         metrics = {
-            "left_shoulder_y": MetricWithTag(
-                value=left_shoulder[1],
-                is_measured=True,
-                description="Left shoulder Y coordinate"
-            ),
-            "right_shoulder_y": MetricWithTag(
-                value=right_shoulder[1],
-                is_measured=True,
-                description="Right shoulder Y coordinate"
-            ),
             "shoulder_symmetry": MetricWithTag(
-                value=shoulder_symmetry,
-                is_measured=True,
-                description="Shoulder level symmetry (0-1)"
-            ),
-            "left_head_tilt": MetricWithTag(
-                value=left_head_tilt,
-                is_measured=True,
-                description="Left ear to shoulder vertical distance"
-            ),
-            "right_head_tilt": MetricWithTag(
-                value=right_head_tilt,
-                is_measured=True,
-                description="Right ear to shoulder vertical distance"
+                value=round(shoulder_score, 1),
+                tag="measured",
+                unit="symmetry score (0-100)",
+                description="Measured bilateral shoulder levelness",
             ),
             "pelvic_symmetry": MetricWithTag(
-                value=pelvic_symmetry,
-                is_measured=True,
-                description="Pelvic level symmetry (0-1)"
+                value=round(hip_score, 1),
+                tag="measured",
+                unit="symmetry score (0-100)",
+                description="Measured bilateral hip levelness",
             ),
-            "spinal_alignment": MetricWithTag(
-                value=spinal_vertical_alignment,
-                is_measured=True,
-                description="Vertical alignment between shoulders and hips"
+            "spinal_alignment_angle": MetricWithTag(
+                value=round(trunk_dev, 1),
+                tag="measured",
+                unit="degrees",
+                description="Measured vertical trunk angle deviation",
             ),
-            "posture_score": MetricWithTag(
-                value=overall_score,
-                is_measured=False,
-                description="Overall posture score (0-100)"
-            )
+            "head_tilt_offset": MetricWithTag(
+                value=round(head_tilt, 1),
+                tag="measured",
+                unit="percentage",
+                description="Measured bilateral ear height difference",
+            ),
+            "postural_stability_score": MetricWithTag(
+                value=round(overall_score, 1),
+                tag="estimated",
+                unit="score (0-100)",
+                description="Derived composite posture quality score",
+            ),
         }
 
-        # Score breakdown
-        score_breakdown = {
-            "shoulder_level": shoulder_symmetry * 100 * 0.3,
-            "head_position": (1.0 - min(left_head_tilt, right_head_tilt) * 5) * 100 * 0.2,
-            "pelvic_level": pelvic_symmetry * 100 * 0.3,
-            "spinal_alignment": (1.0 - min(spinal_vertical_alignment * 10, 1.0)) * 100 * 0.2
-        }
-
-        # Feedback
-        feedback = [
-            f"Posture Score: {overall_score:.1f}/100"
-        ]
-
-        if shoulder_symmetry < 0.8:
-            feedback.append("Work on keeping shoulders level")
-        if left_head_tilt > 0.05 or right_head_tilt > 0.05:  # 5cm threshold
-            feedback.append("Try to keep head centered over shoulders")
-        if pelvic_symmetry < 0.8:
-            feedback.append("Focus on keeping hips level")
-
-        # Explanations
         explanations = {}
-        if shoulder_symmetry < 0.7:
-            explanations["shoulder_level"] = "Uneven shoulder height may indicate muscle imbalance or compensatory patterns"
-        if left_head_tilt > 0.1 or right_head_tilt > 0.1:
-            explanations["head_position"] = "Excessive head tilt may indicate neck strain or poor posture habits"
+        feedback = [f"Overall Posture Score: {overall_score:.1f}/100"]
+        if shoulder_level < 0.85:
+            explanations["shoulder_symmetry"] = "Shoulder asymmetry detected; one shoulder is elevated."
+            feedback.append("• Keep shoulders level and relaxed.")
+        if trunk_dev > 8.0:
+            explanations["spinal_alignment"] = f"Trunk inclined at {trunk_dev:.1f}°; align spine vertically."
+            feedback.append("• Focus on upright spinal alignment.")
 
         return {
-            "overall_score": overall_score,
-            "score_breakdown": score_breakdown,
+            "overall_score": round(overall_score, 1),
+            "score_breakdown": {k: round(v, 1) for k, v in score_breakdown.items()},
             "metrics": metrics,
             "feedback": feedback,
-            "explanations": explanations
+            "explanations": explanations,
         }
 
-    async def analyze_gait(self, landmarks_dict: Dict[str, Tuple[float, float, float]]) -> Dict[str, Any]:
-        """
-        Analyze gait using geometric calculations.
+    async def analyze_gait(self,
+                           landmarks_input: Union[Dict[str, Tuple[float, float, float]],
+                                                  List[Dict[str, Tuple[float, float, float]]]]) -> Dict[str, Any]:
+        """Deterministic geometric gait analysis on landmarks. No ML models used."""
+        frames = self._normalize_input_frames(landmarks_input)
+        seq_features = self.feature_engineering.extract_sequence_features(frames)
 
-        Args:
-            landmarks_dict: Dictionary of landmark names to (x, y, z) tuples
+        step_width = float(seq_features.get("step_width_mean", 0.25))
+        knee_sym = float(seq_features.get("knee_angle_symmetry", 0.90))
+        hip_sym = float(seq_features.get("hip_angle_symmetry", 0.90))
+        knee_rom = float(seq_features.get("left_knee_angle_rom", 45.0) + seq_features.get("right_knee_angle_rom", 45.0)) / 2.0
 
-        Returns:
-            Analysis results for gait
-        """
-        # For single frame analysis, we can only assess static measures
-        # For temporal analysis, we would need a sequence of poses
+        angle_acc = float(min(100.0, max(0.0, 100.0 - abs(step_width - 0.20) * 100.0)))
+        sym_score = float((knee_sym + hip_sym) / 2.0 * 100.0)
+        stab_score = float(seq_features.get("overall_stability", 0.85) * 100.0)
+        rom_score = float(min(100.0, (knee_rom / 60.0) * 100.0))
 
-        left_ankle = landmarks_dict.get("left_ankle", (0, 0, 0))
-        right_ankle = landmarks_dict.get("right_ankle", (0, 0, 0))
-        left_knee = landmarks_dict.get("left_knee", (0, 0, 0))
-        right_knee = landmarks_dict.get("right_knee", (0, 0, 0))
-        left_hip = landmarks_dict.get("left_hip", (0, 0, 0))
-        right_hip = landmarks_dict.get("right_hip", (0, 0, 0))
-        left_shoulder = landmarks_dict.get("left_shoulder", (0, 0, 0))
-        right_shoulder = landmarks_dict.get("right_shoulder", (0, 0, 0))
+        weights = settings.SCORING_WEIGHTS
+        score_breakdown = {
+            "angle_accuracy": angle_acc * weights.get("angle_accuracy", 0.4),
+            "symmetry": sym_score * weights.get("symmetry", 0.2),
+            "stability": stab_score * weights.get("stability", 0.25),
+            "range_of_motion": rom_score * weights.get("range_of_motion", 0.15),
+        }
+        overall_score = sum(score_breakdown.values())
 
-        # Step width (distance between ankles)
-        step_width = self.feature_engineering.calculate_distance(left_ankle, right_ankle)
-
-        # Leg symmetry (knee heights)
-        left_knee_height = left_knee[1] if left_knee else 0
-        right_knee_height = right_knee[1] if right_knee else 0
-        knee_symmetry = self.feature_engineering.calculate_symmetry(left_knee_height, right_knee_height)
-
-        # Hip symmetry
-        left_hip_height = left_hip[1] if left_hip else 0
-        right_hip_height = right_hip[1] if right_hip else 0
-        hip_symmetry = self.feature_engineering.calculate_symmetry(left_hip_height, right_hip_height)
-
-        # Shoulder symmetry
-        left_shoulder_y = left_shoulder[1] if left_shoulder else 0
-        right_shoulder_y = right_shoulder[1] if right_shoulder else 0
-        shoulder_symmetry = self.feature_engineering.calculate_symmetry(left_shoulder_y, right_shoulder_y)
-
-        # Mock overall score
-        overall_score = (
-            knee_symmetry * 0.3 +
-            hip_symmetry * 0.3 +
-            shoulder_symmetry * 0.2 +
-            (1.0 - min(step_width * 5, 1.0)) * 0.2  # Ideal step width penalty
-        ) * 100
-
-        # Calculate metrics
         metrics = {
-            "left_ankle_y": MetricWithTag(
-                value=left_ankle[1],
-                is_measured=True,
-                description="Left ankle Y coordinate"
-            ),
-            "right_ankle_y": MetricWithTag(
-                value=right_ankle[1],
-                is_measured=True,
-                description="Right ankle Y coordinate"
-            ),
             "step_width": MetricWithTag(
-                value=step_width,
-                is_measured=True,
-                description="Distance between ankles (step width)"
-            ),
-            "left_knee_y": MetricWithTag(
-                value=left_knee[1],
-                is_measured=True,
-                description="Left knee Y coordinate"
-            ),
-            "right_knee_y": MetricWithTag(
-                value=right_knee[1],
-                is_measured=True,
-                description="Right knee Y coordinate"
+                value=round(step_width, 3),
+                tag="measured",
+                unit="meters (normalized)",
+                description="Distance between ankles during stance",
             ),
             "knee_symmetry": MetricWithTag(
-                value=knee_symmetry,
-                is_measured=True,
-                description="Knee height symmetry (0-1)"
-            ),
-            "left_hip_y": MetricWithTag(
-                value=left_hip[1],
-                is_measured=True,
-                description="Left hip Y coordinate"
-            ),
-            "right_hip_y": MetricWithTag(
-                value=right_hip[1],
-                is_measured=True,
-                description="Right hip Y coordinate"
+                value=round(knee_sym * 100.0, 1),
+                tag="measured",
+                unit="symmetry score (0-100)",
+                description="Measured bilateral knee angle symmetry",
             ),
             "hip_symmetry": MetricWithTag(
-                value=hip_symmetry,
-                is_measured=True,
-                description="Hip height symmetry (0-1)"
+                value=round(hip_sym * 100.0, 1),
+                tag="measured",
+                unit="symmetry score (0-100)",
+                description="Measured bilateral hip angle symmetry",
             ),
-            "left_shoulder_y": MetricWithTag(
-                value=left_shoulder[1],
-                is_measured=True,
-                description="Left shoulder Y coordinate"
+            "knee_range_of_motion": MetricWithTag(
+                value=round(knee_rom, 1),
+                tag="measured",
+                unit="degrees",
+                description="Measured dynamic knee flexion/extension range",
             ),
-            "right_shoulder_y": MetricWithTag(
-                value=right_shoulder[1],
-                is_measured=True,
-                description="Right shoulder Y coordinate"
+            "gait_harmony_index": MetricWithTag(
+                value=round(overall_score, 1),
+                tag="estimated",
+                unit="score (0-100)",
+                description="Derived composite gait performance index",
             ),
-            "shoulder_symmetry": MetricWithTag(
-                value=shoulder_symmetry,
-                is_measured=True,
-                description="Shoulder height symmetry (0-1)"
-            ),
-            "gait_score": MetricWithTag(
-                value=overall_score,
-                is_measured=False,
-                description="Overall gait score (0-100)"
-            )
         }
 
-        # Score breakdown
-        score_breakdown = {
-            "step_symmetry": knee_symmetry * 100 * 0.3,
-            "hip_level": hip_symmetry * 100 * 0.3,
-            "shoulder_level": shoulder_symmetry * 100 * 0.2,
-            "step_width": (1.0 - min(step_width * 5, 1.0)) * 100 * 0.2
-        }
-
-        # Feedback
-        feedback = [
-            f"Gait Score: {overall_score:.1f}/100",
-            f"Step Width: {step_width:.2f}m"
-        ]
-
-        if knee_symmetry < 0.8:
-            feedback.append("Work on symmetrical knee movement")
-        if hip_symmetry < 0.8:
-            feedback.append("Focus on keeping hips level during walking")
-        if step_width < 0.1:  # Too narrow
-            feedback.append("Try to widen your stance slightly")
-        elif step_width > 0.3:  # Too wide
-            feedback.append("Try to narrow your stance slightly")
-
-        # Explanations
         explanations = {}
-        if knee_symmetry < 0.7:
-            explanations["knee_symmetry"] = "Asymmetric knee movement may indicate pain, weakness, or protective movement patterns"
-        if hip_symmetry < 0.7:
-            explanations["hip_level"] = "Uneven hip height may suggest pelvic tilt or leg length discrepancy"
+        feedback = [f"Overall Gait Quality Score: {overall_score:.1f}/100"]
+        if knee_sym < 0.80:
+            explanations["knee_symmetry"] = "Significant bilateral knee asymmetry during stride phase."
+            feedback.append("• Work on equal stride length on both legs.")
 
         return {
-            "overall_score": overall_score,
-            "score_breakdown": score_breakdown,
+            "overall_score": round(overall_score, 1),
+            "score_breakdown": {k: round(v, 1) for k, v in score_breakdown.items()},
             "metrics": metrics,
             "feedback": feedback,
-            "explanations": explanations
+            "explanations": explanations,
         }
 
-    async def analyze_balance(self, landmarks_dict: Dict[str, Tuple[float, float, float]]) -> Dict[str, Any]:
-        """
-        Analyze balance using geometric calculations.
+    async def analyze_balance(self,
+                             landmarks_input: Union[Dict[str, Tuple[float, float, float]],
+                                                    List[Dict[str, Tuple[float, float, float]]]]) -> Dict[str, Any]:
+        """Deterministic geometric balance analysis on landmarks. No ML models used."""
+        frames = self._normalize_input_frames(landmarks_input)
+        seq_features = self.feature_engineering.extract_sequence_features(frames)
 
-        Args:
-            landmarks_dict: Dictionary of landmark names to (x, y, z) tuples
+        trunk_stab = float(seq_features.get("trunk_stability", 0.90))
+        overall_stab = float(seq_features.get("overall_stability", 0.88))
+        trunk_dev = float(seq_features.get("trunk_angle_mean", 2.0))
 
-        Returns:
-            Analysis results for balance
-        """
-        # For balance, we primarily look at center of mass and sway
-        # Using ankle, knee, hip, and shoulder positions to estimate stability
+        angle_acc = max(0.0, 100.0 - trunk_dev * 6.0)
+        sym_score = float(seq_features.get("hip_level_symmetry", 0.95) * 100.0)
+        stab_score = overall_stab * 100.0
+        rom_score = max(0.0, 100.0 - seq_features.get("trunk_angle_rom", 2.0) * 8.0)
 
-        left_ankle = landmarks_dict.get("left_ankle", (0, 0, 0))
-        right_ankle = landmarks_dict.get("right_ankle", (0, 0, 0))
-        left_knee = landmarks_dict.get("left_knee", (0, 0, 0))
-        right_knee = landmarks_dict.get("right_knee", (0, 0, 0))
-        left_hip = landmarks_dict.get("left_hip", (0, 0, 0))
-        right_hip = landmarks_dict.get("right_hip", (0, 0, 0))
-        left_shoulder = landmarks_dict.get("left_shoulder", (0, 0, 0))
-        right_shoulder = landmarks_dict.get("right_shoulder", (0, 0, 0))
+        weights = settings.SCORING_WEIGHTS
+        score_breakdown = {
+            "angle_accuracy": angle_acc * weights.get("angle_accuracy", 0.4),
+            "symmetry": sym_score * weights.get("symmetry", 0.2),
+            "stability": stab_score * weights.get("stability", 0.25),
+            "range_of_motion": rom_score * weights.get("range_of_motion", 0.15),
+        }
+        overall_score = sum(score_breakdown.values())
 
-        # Base of support (ankle width)
-        base_width = self.feature_engineering.calculate_distance(left_ankle, right_ankle)
-
-        # Center of mass approximation (midpoint between shoulders and hips)
-        left_com_x = (left_shoulder[0] + left_hip[0]) / 2
-        right_com_x = (right_shoulder[0] + right_hip[0]) / 2
-        com_x = (left_com_x + right_com_x) / 2
-
-        # Midpoint of base of support
-        base_midpoint_x = (left_ankle[0] + right_ankle[0]) / 2
-
-        # Lateral stability (how far COM is from base midpoint)
-        lateral_stability = abs(com_x - base_midpoint_x)
-
-        # Vertical alignment (ankle to shoulder)
-        left_vertical_alignment = abs(left_ankle[0] - left_shoulder[0])
-        right_vertical_alignment = abs(right_ankle[0] - right_shoulder[0])
-        avg_vertical_alignment = (left_vertical_alignment + right_vertical_alignment) / 2
-
-        # Weight distribution (heel/toe - simplified using ankle Y position)
-        left_ankle_y = left_ankle[1] if left_ankle else 0
-        right_ankle_y = right_ankle[1] if right_ankle else 0
-        avg_ankle_y = (left_ankle_y + right_ankle_y) / 2
-
-        # Mock overall score
-        overall_score = (
-            (1.0 - min(lateral_stability * 10, 1.0)) * 0.4 +  # Lateral stability
-            (1.0 - min(avg_vertical_alignment * 5, 1.0)) * 0.3 +  # Vertical alignment
-            min(base_width * 3, 1.0) * 0.2 +  # Base of support adequacy
-            (1.0 - min(abs(avg_ankle_y) * 10, 1.0)) * 0.1  # Ankle position
-        ) * 100
-
-        # Calculate metrics
         metrics = {
-            "left_ankle_x": MetricWithTag(
-                value=left_ankle[0],
-                is_measured=True,
-                description="Left ankle X coordinate"
+            "trunk_sway_angle": MetricWithTag(
+                value=round(trunk_dev, 2),
+                tag="measured",
+                unit="degrees",
+                description="Measured angular deviation of trunk during balance hold",
             ),
-            "right_ankle_x": MetricWithTag(
-                value=right_ankle[0],
-                is_measured=True,
-                description="Right ankle X coordinate"
+            "pelvic_tilt_symmetry": MetricWithTag(
+                value=round(sym_score, 1),
+                tag="measured",
+                unit="symmetry score (0-100)",
+                description="Measured bilateral pelvic levelness",
             ),
-            "base_width": MetricWithTag(
-                value=base_width,
-                is_measured=True,
-                description="Distance between ankles (base of support)"
+            "trunk_stability_coefficient": MetricWithTag(
+                value=round(trunk_stab * 100.0, 1),
+                tag="estimated",
+                unit="stability score (0-100)",
+                description="Estimated trunk stability derived from movement variance",
             ),
-            "left_com_x": MetricWithTag(
-                value=left_com_x,
-                is_measured=True,
-                description="Left side center of mass estimate X"
+            "overall_balance_score": MetricWithTag(
+                value=round(overall_score, 1),
+                tag="estimated",
+                unit="score (0-100)",
+                description="Derived composite balance assessment score",
             ),
-            "right_com_x": MetricWithTag(
-                value=right_com_x,
-                is_measured=True,
-                description="Right side center of mass estimate X"
-            ),
-            "com_x": MetricWithTag(
-                value=com_x,
-                is_measured=True,
-                description="Overall center of mass estimate X"
-            ),
-            "base_midpoint_x": MetricWithTag(
-                value=base_midpoint_x,
-                is_measured=True,
-                description="Midpoint of base of support X"
-            ),
-            "lateral_stability": MetricWithTag(
-                value=lateral_stability,
-                is_measured=True,
-                description="Lateral stability (distance from COM to base midpoint)"
-            ),
-            "left_vertical_alignment": MetricWithTag(
-                value=left_vertical_alignment,
-                is_measured=True,
-                description="Left ankle-shoulder vertical alignment"
-            ),
-            "right_vertical_alignment": MetricWithTag(
-                value=right_vertical_alignment,
-                is_measured=True,
-                description="Right ankle-shoulder vertical alignment"
-            ),
-            "avg_vertical_alignment": MetricWithTag(
-                value=avg_vertical_alignment,
-                is_measured=True,
-                description="Average vertical alignment"
-            ),
-            "left_ankle_y": MetricWithTag(
-                value=left_ankle_y,
-                is_measured=True,
-                description="Left ankle Y coordinate (heel/toe indicator)"
-            ),
-            "right_ankle_y": MetricWithTag(
-                value=right_ankle_y,
-                is_measured=True,
-                description="Right ankle Y coordinate (heel/toe indicator)"
-            ),
-            "balance_score": MetricWithTag(
-                value=overall_score,
-                is_measured=False,
-                description="Overall balance score (0-100)"
-            )
         }
 
-        # Score breakdown
-        score_breakdown = {
-            "lateral_stability": (1.0 - min(lateral_stability * 10, 1.0)) * 100 * 0.4,
-            "vertical_alignment": (1.0 - min(avg_vertical_alignment * 5, 1.0)) * 100 * 0.3,
-            "base_of_support": min(base_width * 3, 1.0) * 100 * 0.2,
-            "ankle_position": (1.0 - min(abs(avg_ankle_y) * 10, 1.0)) * 100 * 0.1
-        }
-
-        # Feedback
-        feedback = [
-            f"Balance Score: {overall_score:.1f}/100",
-            f"Base Width: {base_width:.2f}m"
-        ]
-
-        if lateral_stability > 0.05:  # 5cm threshold
-            feedback.append("Work on keeping your center of mass over your base of support")
-        if base_width < 0.1:
-            feedback.append("Try widening your stance slightly for better stability")
-        elif base_width > 0.3:
-            feedback.append("Your stance may be too wide - try narrowing it slightly")
-
-        # Explanations
         explanations = {}
-        if lateral_stability > 0.1:
-            explanations["lateral_stability"] = "Excessive lateral sway may indicate balance deficits or proprioceptive issues"
-        if base_width < 0.05:
-            explanations["base_of_support"] = "Very narrow base of support reduces stability and increases fall risk"
+        feedback = [f"Overall Balance Score: {overall_score:.1f}/100"]
+        if trunk_dev > 6.0:
+            explanations["postural_sway"] = "High postural sway detected outside baseline stability margins."
+            feedback.append("• Engage core stabilizers to minimize postural sway.")
 
         return {
-            "overall_score": overall_score,
-            "score_breakdown": score_breakdown,
+            "overall_score": round(overall_score, 1),
+            "score_breakdown": {k: round(v, 1) for k, v in score_breakdown.items()},
             "metrics": metrics,
             "feedback": feedback,
-            "explanations": explanations
+            "explanations": explanations,
         }
 
-    async def analyze_flexibility(self, landmarks_dict: Dict[str, Tuple[float, float, float]]) -> Dict[str, Any]:
-        """
-        Analyze flexibility using geometric calculations.
+    async def analyze_flexibility(self,
+                                 landmarks_input: Union[Dict[str, Tuple[float, float, float]],
+                                                        List[Dict[str, Tuple[float, float, float]]]]) -> Dict[str, Any]:
+        """Deterministic geometric flexibility analysis on landmarks. No ML models used."""
+        frames = self._normalize_input_frames(landmarks_input)
+        seq_features = self.feature_engineering.extract_sequence_features(frames)
 
-        Args:
-            landmarks_dict: Dictionary of landmark names to (x, y, z) tuples
+        shoulder_rom = float(seq_features.get("left_shoulder_angle_rom", 60.0) + seq_features.get("right_shoulder_angle_rom", 60.0)) / 2.0
+        hip_rom = float(seq_features.get("left_hip_angle_rom", 50.0) + seq_features.get("right_hip_angle_rom", 50.0)) / 2.0
+        knee_rom = float(seq_features.get("left_knee_angle_rom", 50.0) + seq_features.get("right_knee_angle_rom", 50.0)) / 2.0
 
-        Returns:
-            Analysis results for flexibility
-        """
-        # For flexibility, we look at range of motion at various joints
-        # Since we only have a single frame, we assess current position relative to norms
+        angle_acc = min(100.0, (shoulder_rom / 90.0) * 100.0)
+        sym_score = float(seq_features.get("shoulder_angle_symmetry", 0.90) * 100.0)
+        stab_score = float(seq_features.get("overall_stability", 0.90) * 100.0)
+        rom_score = min(100.0, ((shoulder_rom + hip_rom + knee_rom) / 200.0) * 100.0)
 
-        left_shoulder = landmarks_dict.get("left_shoulder", (0, 0, 0))
-        right_shoulder = landmarks_dict.get("right_shoulder", (0, 0, 0))
-        left_elbow = landmarks_dict.get("left_elbow", (0, 0, 0))
-        right_elbow = landmarks_dict.get("right_elbow", (0, 0, 0))
-        left_wrist = landmarks_dict.get("left_wrist", (0, 0, 0))
-        right_wrist = landmarks_dict.get("right_wrist", (0, 0, 0))
-        left_hip = landmarks_dict.get("left_hip", (0, 0, 0))
-        right_hip = landmarks_dict.get("right_hip", (0, 0, 0))
-        left_knee = landmarks_dict.get("left_knee", (0, 0, 0))
-        right_knee = landmarks_dict.get("right_knee", (0, 0, 0))
-        left_ankle = landmarks_dict.get("left_ankle", (0, 0, 0))
-        right_ankle = landmarks_dict.get("right_ankle", (0, 0, 0))
+        weights = settings.SCORING_WEIGHTS
+        score_breakdown = {
+            "angle_accuracy": angle_acc * weights.get("angle_accuracy", 0.4),
+            "symmetry": sym_score * weights.get("symmetry", 0.2),
+            "stability": stab_score * weights.get("stability", 0.25),
+            "range_of_motion": rom_score * weights.get("range_of_motion", 0.15),
+        }
+        overall_score = sum(score_breakdown.values())
 
-        # Shoulder flexion (approximated by arm angle relative to torso)
-        # Simplified: using Y coordinate difference between wrist and shoulder
-        left_shoulder_flexion = abs(left_wrist[1] - left_shoulder[1]) if left_wrist and left_shoulder else 0
-        right_shoulder_flexion = abs(right_wrist[1] - right_shoulder[1]) if right_wrist and right_shoulder else 0
-
-        # Hip flexion (knee height relative to hip)
-        left_hip_flexion = abs(left_knee[1] - left_hip[1]) if left_knee and left_hip else 0
-        right_hip_flexion = abs(right_knee[1] - right_hip[1]) if right_knee and right_hip else 0
-
-        # Ankle dorsiflexion (toe up/down relative to foot)
-        # Simplified using ankle Y position
-        left_ankle_dorsi = left_ankle[1] if left_ankle else 0
-        right_ankle_dorsi = right_ankle[1] if right_ankle else 0
-
-        # Trunk flexibility (approximated by shoulder to hip angle)
-        left_trunk_flex = self.feature_engineering.calculate_angle(
-            left_shoulder, left_hip,
-            landmarks_dict.get("left_knee", (0, 0, 0))
-        ) if left_shoulder and left_hip and landmarks_dict.get("left_knee") else 0
-        right_trunk_flex = self.feature_engineering.calculate_angle(
-            right_shoulder, right_hip,
-            landmarks_dict.get("right_knee", (0, 0, 0))
-        ) if right_shoulder and right_hip and landmarks_dict.get("right_knee") else 0
-
-        # Mock overall score based on flexibility measures
-        # In reality, these would be compared to normative values
-        shoulder_score = min(left_shoulder_flexion, right_shoulder_flexion) * 2  # Arbitrary scaling
-        hip_score = min(left_hip_flexion, right_hip_flexion) * 2
-        ankle_score = (1.0 - min(abs(left_ankle_dorsi) * 5, 1.0)) * 50 + \
-                     (1.0 - min(abs(right_ankle_dorsi) * 5, 1.0)) * 50
-        trunk_score = min(left_trunk_flex, right_trunk_flex) * 2
-
-        overall_score = (shoulder_score + hip_score + ankle_score + trunk_score) / 4
-        overall_score = min(100.0, max(0.0, overall_score))
-
-        # Calculate metrics
         metrics = {
-            "left_shoulder_flexion": MetricWithTag(
-                value=left_shoulder_flexion,
-                is_measured=True,
-                description="Left shoulder flexion estimation"
+            "shoulder_range_of_motion": MetricWithTag(
+                value=round(shoulder_rom, 1),
+                tag="measured",
+                unit="degrees",
+                description="Measured bilateral shoulder active range of motion",
             ),
-            "right_shoulder_flexion": MetricWithTag(
-                value=right_shoulder_flexion,
-                is_measured=True,
-                description="Right shoulder flexion estimation"
+            "hip_range_of_motion": MetricWithTag(
+                value=round(hip_rom, 1),
+                tag="measured",
+                unit="degrees",
+                description="Measured bilateral hip active range of motion",
             ),
-            "left_hip_flexion": MetricWithTag(
-                value=left_hip_flexion,
-                is_measured=True,
-                description="Left hip flexion estimation"
+            "knee_range_of_motion": MetricWithTag(
+                value=round(knee_rom, 1),
+                tag="measured",
+                unit="degrees",
+                description="Measured bilateral knee active range of motion",
             ),
-            "right_hip_flexion": MetricWithTag(
-                value=right_hip_flexion,
-                is_measured=True,
-                description="Right hip flexion estimation"
+            "flexibility_rating": MetricWithTag(
+                value=round(overall_score, 1),
+                tag="estimated",
+                unit="score (0-100)",
+                description="Derived composite flexibility index",
             ),
-            "left_ankle_position": MetricWithTag(
-                value=left_ankle_dorsi,
-                is_measured=True,
-                description="Left ankle position (dorsi/plantar flexion)"
-            ),
-            "right_ankle_position": MetricWithTag(
-                value=right_ankle_dorsi,
-                is_measured=True,
-                description="Right ankle position (dorsi/plantar flexion)"
-            ),
-            "left_trunk_flexion": MetricWithTag(
-                value=left_trunk_flex,
-                is_measured=True,
-                description="Left trunk flexion estimation"
-            ),
-            "right_trunk_flexion": MetricWithTag(
-                value=right_trunk_flex,
-                is_measured=True,
-                description="Right trunk flexion estimation"
-            ),
-            "flexibility_score": MetricWithTag(
-                value=overall_score,
-                is_measured=False,
-                description="Overall flexibility score (0-100)"
-            )
         }
 
-        # Score breakdown
-        score_breakdown = {
-            "shoulder_flexibility": min(shoulder_score, 100) * 0.25,
-            "hip_flexibility": min(hip_score, 100) * 0.25,
-            "ankle_flexibility": min(ankle_score, 100) * 0.25,
-            "trunk_flexibility": min(trunk_score, 100) * 0.25
-        }
-
-        # Feedback
-        feedback = [
-            f"Flexibility Score: {overall_score:.1f}/100"
-        ]
-
-        if shoulder_score < 30:
-            feedback.append("Consider shoulder mobility exercises")
-        if hip_score < 30:
-            feedback.append("Hip flexibility may benefit from stretching routines")
-        if ankle_score < 40:
-            feedback.append("Ankle mobility work could improve movement quality")
-        if trunk_score < 30:
-            feedback.append("Core and spinal flexibility exercises may be beneficial")
-
-        # Explanations
         explanations = {}
-        if shoulder_score < 25:
-            explanations["shoulder_flexibility"] = "Limited shoulder mobility may affect overhead movements and reaching"
-        if hip_score < 25:
-            explanations["hip_flexibility"] = "Restricted hip motion may impact walking, squatting, and transitional movements"
-        if ankle_score < 30:
-            explanations["ankle_flexibility"] = "Ankle mobility limitations can affect balance and gait patterns"
+        feedback = [f"Flexibility Rating: {overall_score:.1f}/100"]
+        if shoulder_rom < 45.0:
+            explanations["shoulder_rom"] = "Shoulder active range of motion is restricted below expected 45° benchmark."
+            feedback.append("• Perform gradual shoulder mobility exercises.")
 
         return {
-            "overall_score": overall_score,
-            "score_breakdown": score_breakdown,
+            "overall_score": round(overall_score, 1),
+            "score_breakdown": {k: round(v, 1) for k, v in score_breakdown.items()},
             "metrics": metrics,
             "feedback": feedback,
-            "explanations": explanations
+            "explanations": explanations,
         }
 
-    async def analyze_form(
-        self, poses: List[List[Tuple[float, float, float, float]]]
-    ) -> dict:
+    # -----------------------------------------------------------------------
+    # Main Dispatcher
+    # -----------------------------------------------------------------------
+
+    async def analyze_form(self,
+                           poses_or_landmarks: Union[List[Any], Dict[str, Tuple[float, float, float]]],
+                           exercise_type: str = "rehab_assessment",
+                           exercise_id: Optional[str] = "shoulder-abduction") -> Dict[str, Any]:
         """
-        Analyze form from a sequence of poses.
+        Analyze form by routing to the appropriate movement analysis module.
 
         Args:
-            poses: List of pose landmarks (each pose is list of (x,y,z,visibility) tuples)
+            poses_or_landmarks: Detected pose list or landmark dictionaries
+            exercise_type: 'rehab_assessment' (flagship), 'yoga', 'posture', 'gait', 'balance', 'flexibility'
+            exercise_id: Specific exercise ID (e.g. 'shoulder-abduction', 'warrior-ii')
 
         Returns:
-            Form analysis results with scores and feedback.
+            Dictionary with overall_score, score_breakdown, metrics, feedback, explanations
         """
-        # For now, use the first pose for analysis
-        # In future versions, we could analyze temporal patterns
-        if not poses or len(poses) == 0:
-            return {
-                "overall_score": 0.0,
-                "score_breakdown": {},
-                "metrics": {},
-                "feedback": ["No pose data available for analysis"],
-                "explanations": {},
-                "processing_time_ms": 0,
-                "exercise_type": "unknown"
-            }
+        frames = self._normalize_input_frames(poses_or_landmarks)
 
-        # Use first pose for analysis (could be enhanced to use multiple poses)
-        first_pose = poses[0]
-        landmarks_dict = self._convert_to_landmark_dict(first_pose)
-
-        # Determine exercise type from context (this would come from request in real implementation)
-        # For now, default to rehab assessment as the flagship module
-        exercise_type = "rehab_assessment"
-
-        # Route to appropriate analysis method
-        if exercise_type == "yoga":
-            return await self.analyze_yoga_pose(landmarks_dict)
-        elif exercise_type.startswith("rehab") or exercise_type == "rehab_assessment":
-            # Extract specific exercise type from context
-            specific_exercise = "shoulder-abduction"  # Would come from request
-            return await self.analyze_rehab_movement(landmarks_dict, specific_exercise)
-        elif exercise_type == "posture":
-            return await self.analyze_posture(landmarks_dict)
-        elif exercise_type == "gait":
-            return await self.analyze_gait(landmarks_dict)
-        elif exercise_type == "balance":
-            return await self.analyze_balance(landmarks_dict)
-        elif exercise_type == "flexibility":
-            return await self.analyze_flexibility(landmarks_dict)
+        etype = (exercise_type or "rehab_assessment").lower()
+        if etype == "rehab_assessment":
+            return await self.analyze_rehab_movement(frames, exercise_id=exercise_id or "shoulder-abduction")
+        elif etype == "yoga":
+            return await self.analyze_yoga_pose(frames)
+        elif etype == "posture":
+            return await self.analyze_posture(frames)
+        elif etype == "gait":
+            return await self.analyze_gait(frames)
+        elif etype == "balance":
+            return await self.analyze_balance(frames)
+        elif etype == "flexibility":
+            return await self.analyze_flexibility(frames)
         else:
-            # Default to rehab assessment
-            return await self.analyze_rehab_movement(landmarks_dict, "shoulder-abduction")
+            return await self.analyze_rehab_movement(frames, exercise_id=exercise_id or "shoulder-abduction")
+
+    async def analyze_video(self,
+                            video_path: str,
+                            exercise_type: str = "rehab_assessment",
+                            exercise_id: Optional[str] = "shoulder-abduction") -> Dict[str, Any]:
+        """
+        Full V1 video pipeline:
+        uploaded video -> OpenCV -> MediaPipe BlazePose -> shared landmark processing -> shared feature engineering -> module scoring.
+        """
+        frames = await self.process_video_frames(video_path)
+        if not frames:
+            raise AppException("Failed to extract pose landmarks from uploaded video")
+        return await self.analyze_form(frames, exercise_type=exercise_type, exercise_id=exercise_id)

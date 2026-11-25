@@ -4,15 +4,14 @@ Test script for AI service.
 
 import sys
 import os
-# Add the current directory to the path so we can import from app
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import asyncio
 import numpy as np
-from unittest.mock import Mock, AsyncMock
+
+# Add the backend directory to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from app.services.ai_service import AIService
-from app.schemas.movement import AnalysisRequest
+from app.schemas.movement import MetricWithTag
 
 
 async def test_ai_service():
@@ -20,7 +19,6 @@ async def test_ai_service():
     print("Testing AI Service")
     print("=" * 30)
 
-    # Create AI service instance
     ai_service = AIService()
 
     # Test landmark conversion
@@ -32,48 +30,52 @@ async def test_ai_service():
         (0.5, 0.3, 0.2, 0.7),  # right_elbow
     ]
 
-    # Extend to 33 landmarks (MediaPipe standard)
     while len(mock_landmarks) < 33:
         mock_landmarks.append((0.0, 0.0, 0.0, 0.0))
 
     landmark_dict = ai_service._convert_to_landmark_dict(mock_landmarks)
-    print(f"Converted {len(landmark_dict)} landmarks")
     assert "nose" in landmark_dict
     assert "left_shoulder" in landmark_dict
 
-    # Test yoga pose analysis (will use placeholder)
+    # Test yoga pose analysis (supporting module)
     yoga_result = await ai_service.analyze_yoga_pose(landmark_dict)
-    print(f"Yoga analysis score: {yoga_result['overall_score']:.2f}")
     assert "overall_score" in yoga_result
     assert "metrics" in yoga_result
     assert "feedback" in yoga_result
 
-    # Test rehab analysis
+    # Test rehab analysis (flagship module)
     rehab_result = await ai_service.analyze_rehab_movement(landmark_dict, "shoulder-abduction")
-    print(f"Rehab analysis score: {rehab_result['overall_score']:.2f}")
     assert "overall_score" in rehab_result
     assert "score_breakdown" in rehab_result
     assert "metrics" in rehab_result
+    assert "clinical_quality_score" in rehab_result
+    assert "movement_correct" in rehab_result
+    # Verify measured vs estimated tagging
+    for metric_name, metric_obj in rehab_result["metrics"].items():
+        assert isinstance(metric_obj, MetricWithTag)
+        assert metric_obj.tag in ("measured", "estimated")
 
     # Test posture analysis
     posture_result = await ai_service.analyze_posture(landmark_dict)
-    print(f"Posture analysis score: {posture_result['overall_score']:.2f}")
     assert "overall_score" in posture_result
+    assert posture_result["metrics"]["shoulder_symmetry"].tag == "measured"
+    assert posture_result["metrics"]["postural_stability_score"].tag == "estimated"
 
     # Test gait analysis
     gait_result = await ai_service.analyze_gait(landmark_dict)
-    print(f"Gait analysis score: {gait_result['overall_score']:.2f}")
     assert "overall_score" in gait_result
+    assert gait_result["metrics"]["step_width"].tag == "measured"
 
     # Test balance analysis
     balance_result = await ai_service.analyze_balance(landmark_dict)
-    print(f"Balance analysis score: {balance_result['overall_score']:.2f}")
     assert "overall_score" in balance_result
+    assert balance_result["metrics"]["trunk_sway_angle"].tag == "measured"
+    assert balance_result["metrics"]["overall_balance_score"].tag == "estimated"
 
     # Test flexibility analysis
     flex_result = await ai_service.analyze_flexibility(landmark_dict)
-    print(f"Flexibility analysis score: {flex_result['overall_score']:.2f}")
     assert "overall_score" in flex_result
+    assert flex_result["metrics"]["shoulder_range_of_motion"].tag == "measured"
 
     print("\nAll AI service tests passed!")
 
