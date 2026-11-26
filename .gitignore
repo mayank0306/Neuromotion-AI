@@ -86,14 +86,23 @@ dist/
 *.model
 *.pt
 *.h5
-models/
+/models/
 
 # Data files
 *.db
 *.sqlite3
 *.db-journal
-datasets/*
+datasets/rehab24_6/*
+!datasets/rehab24_6/videos/
+!datasets/rehab24_6/segmentation/
+!datasets/rehab24_6/landmarks/
+datasets/rehab24_6/videos/*
+datasets/rehab24_6/segmentation/*
+datasets/rehab24_6/landmarks/*
+datasets/kaggle_yoga/*
+datasets/kimore/*
 !datasets/README.md
+!datasets/**/.gitkeep
 
 # Media
 *.mp4
